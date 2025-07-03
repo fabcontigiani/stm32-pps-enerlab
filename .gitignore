@@ -1,0 +1,30 @@
+# Compiled object files, binaries, and maps
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.d
+
+# IDE/editor files
+.vscode/
+*.swp
+*.swo
+*.user
+*.workspace
+*.cproject
+*.project
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Other
+*.bak
+*.old
+
+# Ignore generated API replies and Ninja logs
+*.ninja_log
+*.ninja_deps

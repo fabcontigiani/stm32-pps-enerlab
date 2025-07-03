@@ -1,0 +1,6 @@
+/home/fab/Projects/stm32-pps-enerlab/build/Debug/CMakeFiles/stm32-pps-enerlab.dir
+/home/fab/Projects/stm32-pps-enerlab/build/Debug/CMakeFiles/edit_cache.dir
+/home/fab/Projects/stm32-pps-enerlab/build/Debug/CMakeFiles/rebuild_cache.dir
+/home/fab/Projects/stm32-pps-enerlab/build/Debug/cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir
+/home/fab/Projects/stm32-pps-enerlab/build/Debug/cmake/stm32cubemx/CMakeFiles/edit_cache.dir
+/home/fab/Projects/stm32-pps-enerlab/build/Debug/cmake/stm32cubemx/CMakeFiles/rebuild_cache.dir
