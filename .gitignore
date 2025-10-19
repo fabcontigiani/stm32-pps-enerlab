@@ -28,3 +28,59 @@
 # Ignore generated API replies and Ninja logs
 *.ninja_log
 *.ninja_deps
+
+# Build directories and intermediate artifacts
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/bin/
+/lib/
+/obj/
+/Objects/
+/target/
+/_*/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+cmake_uninstall.cmake
+install_manifest.txt
+compile_commands.json
+
+# Build system files
+Makefile
+build.ninja
+
+# Static libs, linker and archive outputs
+*.a
+*.la
+*.lo
+*.lib
+*.sym
+
+# Dependency and generated files
+*.d.ts
+*.depend
+*.dep
+.dep/
+.deps/
+
+# Tooling / IDE / cache
+.pio/
+.idea/
+*.iml
+*.tmproj
+.tags
+ctags
+*.cache
+.ccache
+.coverage
+coverage/
+lcov.info
+
+# Misc
+*.dmp
+*.elf.*
+*.map.*
