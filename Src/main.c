@@ -19,13 +19,14 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "dma.h"
 #include "spi.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define PER_ADC_CHANNEL_COUNT 3U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -46,7 +47,12 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* ADC multimode DMA buffer: each entry is a 32-bit word where
+ * lower 16 bits = ADC1 sample, upper 16 bits = ADC2 sample.
+ */
+static uint32_t adc_dma_buf[PER_ADC_CHANNEL_COUNT];
+static uint16_t adc1_samples[PER_ADC_CHANNEL_COUNT];
+static uint16_t adc2_samples[PER_ADC_CHANNEL_COUNT];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -89,12 +95,28 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
+  {
+    /* Calibration Error */
+    Error_Handler();
+  }
+  if (HAL_ADCEx_Calibration_Start(&hadc2) != HAL_OK)
+  {
+    /* Calibration Error */
+    Error_Handler();
+  }
 
+  HAL_ADC_Start(&hadc2);
+  if (HAL_ADCEx_MultiModeStart_DMA(&hadc1, adc_dma_buf, PER_ADC_CHANNEL_COUNT) != HAL_OK) {
+    /* Start Error */
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -155,7 +177,39 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+  if (hadc->Instance != ADC1) {
+    return;
+  }
 
+  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT; ++i) {
+    uint32_t packed = adc_dma_buf[i];
+    adc1_samples[i] = (uint16_t)(packed & 0xFFFFU);
+    adc2_samples[i] = (uint16_t)((packed >> 16) & 0xFFFFU);
+  }
+
+  char msg[128];
+  int len = 0;
+
+  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
+    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
+                    (unsigned int)i, (unsigned int)adc1_samples[i]);
+  }
+  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
+    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
+                    (unsigned int)(i + PER_ADC_CHANNEL_COUNT),
+                    (unsigned int)adc2_samples[i]);
+  }
+  if (len < (int)sizeof(msg)) {
+    msg[len++] = '\r';
+  }
+  if (len < (int)sizeof(msg)) {
+    msg[len++] = '\n';
+  }
+  if (len > 0) {
+    HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
+  }
+}
 /* USER CODE END 4 */
 
 /**
