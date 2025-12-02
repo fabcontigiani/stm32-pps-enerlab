@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "queue.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +45,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+QueueHandle_t adcQueueHandle;
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 
@@ -97,7 +97,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  /* Create ADC measurement queue - holds 10 ADC reading structs */
+  adcQueueHandle = xQueueCreate(10, sizeof(ADC_MeasurementData_t));
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */

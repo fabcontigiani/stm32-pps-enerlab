@@ -194,33 +194,26 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     return;
   }
 
+  /* Extract samples from DMA buffer */
   for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT; ++i) {
     uint32_t packed = adc_dma_buf[i];
     adc1_samples[i] = (uint16_t)(packed & 0xFFFFU);
     adc2_samples[i] = (uint16_t)((packed >> 16) & 0xFFFFU);
   }
 
-  char msg[128];
-  int len = 0;
+  /* Prepare measurement data for queue */
+  ADC_MeasurementData_t adcData;
+  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT; ++i) {
+    adcData.channels[i] = adc1_samples[i];
+  }
+  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT; ++i) {
+    adcData.channels[i + PER_ADC_CHANNEL_COUNT] = adc2_samples[i];
+  }
 
-  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
-    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
-                    (unsigned int)i, (unsigned int)adc1_samples[i]);
-  }
-  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
-    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
-                    (unsigned int)(i + PER_ADC_CHANNEL_COUNT),
-                    (unsigned int)adc2_samples[i]);
-  }
-  if (len < (int)sizeof(msg)) {
-    msg[len++] = '\r';
-  }
-  if (len < (int)sizeof(msg)) {
-    msg[len++] = '\n';
-  }
-  if (len > 0) {
-    HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
-  }
+  /* Push to queue from ISR (no blocking) */
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  xQueueSendFromISR(adcQueueHandle, &adcData, &xHigherPriorityTaskWoken);
+  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 /* USER CODE END 4 */
 
