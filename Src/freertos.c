@@ -25,7 +25,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 #include "queue.h"
+#include "usart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -122,10 +124,33 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  static ADC_MeasurementData_t latestMeasurement;
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    if (xQueueReceive(adcQueueHandle, &latestMeasurement, portMAX_DELAY) == pdTRUE) {
+      char msg[128];
+      int len = 0;
+      for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
+        len += snprintf(msg + len, sizeof(msg) - (size_t)len,
+                        "CH%u:%u ", i, (unsigned int)latestMeasurement.channels[i]);
+      }
+      for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
+        len += snprintf(msg + len, sizeof(msg) - (size_t)len,
+                        "CH%u:%u ", (unsigned int)(i + PER_ADC_CHANNEL_COUNT),
+                        (unsigned int)latestMeasurement.channels[i + PER_ADC_CHANNEL_COUNT]);
+      }
+      if (len < (int)sizeof(msg)) {
+        msg[len++] = '\r';
+      }
+      if (len < (int)sizeof(msg)) {
+        msg[len++] = '\n';
+      }
+      if (len > 0) {
+        HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
+      }
+    }
   }
   /* USER CODE END StartDefaultTask */
 }

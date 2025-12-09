@@ -68,6 +68,7 @@ extern QueueHandle_t adcQueueHandle;
 #define SPI1_CS3_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+#define PER_ADC_CHANNEL_COUNT 3U
 
 /* USER CODE END Private defines */
 
