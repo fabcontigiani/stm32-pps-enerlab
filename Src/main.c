@@ -21,6 +21,7 @@
 #include "adc.h"
 #include "dma.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -100,6 +101,7 @@ int main(void)
   MX_ADC2_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
   {
@@ -111,6 +113,8 @@ int main(void)
     /* Calibration Error */
     Error_Handler();
   }
+
+  HAL_TIM_Base_Start(&htim3); // Start Timer3 (Trigger Source For ADC1)
 
   HAL_ADC_Start(&hadc2);
   if (HAL_ADCEx_MultiModeStart_DMA(&hadc1, adc_dma_buf, PER_ADC_CHANNEL_COUNT) != HAL_OK) {
