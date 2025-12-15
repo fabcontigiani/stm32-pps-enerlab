@@ -27,6 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdint.h>
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -64,7 +65,7 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+volatile uint8_t uartReady = 1;
 /* USER CODE END 0 */
 
 /**
@@ -210,8 +211,15 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
   if (len < (int)sizeof(msg)) {
     msg[len++] = '\n';
   }
-  if (len > 0) {
-    HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
+  if (len > 0 && uartReady) {
+    HAL_UART_Transmit_DMA(&huart1, (uint8_t *)msg, (uint16_t)len);
+    uartReady = 0;
+  }
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == USART1) {
+    uartReady = 1;
   }
 }
 /* USER CODE END 4 */
