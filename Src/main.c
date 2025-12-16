@@ -81,18 +81,8 @@ static char rms_tx_buf[128];
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-float calculate_rms(float *buffer, uint16_t samples)
-{
-    if (samples == 0)
-        return 0.0f;
-
-    float sum = 0.0f;
-
-    for (uint16_t i = 0; i < samples; i++)
-        sum += buffer[i] * buffer[i];
-
-    return sqrtf(sum / samples);
-}
+void writeWiper(uint16_t chipSelect, uint16_t wiperValue);
+float calculate_rms(float *buffer, uint16_t samples);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -154,6 +144,8 @@ int main(void)
     /* Start Error */
     Error_Handler();
   }
+
+  int loop_counter = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -163,6 +155,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    writeWiper(SPI1_CS3_Pin, loop_counter);
+    writeWiper(SPI1_CS4_Pin, loop_counter);
+    writeWiper(SPI1_CS5_Pin, loop_counter);
+
+    loop_counter = (loop_counter + 1) % 256; // Incrementar valor del wiper
+
     // Esperar a que haya datos nuevos de ADC
     if (!adcDataReady) {
       continue;
@@ -327,6 +325,27 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART1) {
     uartReady = 1;
   }
+}
+
+float calculate_rms(float *buffer, uint16_t samples)
+{
+    if (samples == 0)
+        return 0.0f;
+
+    float sum = 0.0f;
+
+    for (uint16_t i = 0; i < samples; i++)
+        sum += buffer[i] * buffer[i];
+
+    return sqrtf(sum / samples);
+}
+
+void writeWiper(uint16_t chipSelect, uint16_t wiperValue) {
+  HAL_GPIO_WritePin(SPI1_CS3_GPIO_Port, chipSelect, GPIO_PIN_RESET); // CS LOW
+  uint16_t command = 0x0000 | (ADDRESS_WIPER0 << 4) | (COMMAND_WRITE << 2);
+  uint16_t data = 0x0000 | (command << 8) | wiperValue; 
+  HAL_SPI_Transmit_DMA(&hspi1, (uint8_t *)&data, sizeof(data));
+  HAL_GPIO_WritePin(SPI1_CS3_GPIO_Port, chipSelect, GPIO_PIN_SET); // CS HIGH
 }
 /* USER CODE END 4 */
 

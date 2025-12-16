@@ -41,7 +41,8 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-
+static const char ADDRESS_WIPER0 = 0x0;
+static const unsigned char COMMAND_WRITE = 0x00;
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/
