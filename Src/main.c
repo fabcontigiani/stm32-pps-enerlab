@@ -29,16 +29,23 @@
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct {
+  uint16_t channels[6];
+} ADC_MeasurementData_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define PER_ADC_CHANNEL_COUNT 3U
+#define MAX_SAMPLES   50  // Cantidad máxima de muestras por periodo
+#define MAX_RMS       10    // Cantidad muestras RMS por canal para enviar por UART
+#define HYST          50    // Histéresis para cruce (cuentas ADC)
+#define OFFSET        2048  // adc de 2^12 = 4096 bits -> offset = 2^12 / 2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,19 +60,44 @@
  * lower 16 bits = ADC1 sample, upper 16 bits = ADC2 sample.
  */
 static uint32_t adc_dma_buf[PER_ADC_CHANNEL_COUNT];
-static uint16_t adc1_samples[PER_ADC_CHANNEL_COUNT];
-static uint16_t adc2_samples[PER_ADC_CHANNEL_COUNT];
+static ADC_MeasurementData_t adcIncData;
+
+static float sample_buffer[6][MAX_SAMPLES];
+static uint16_t sample_index = 0;
+
+static float v1_last_sample = 0;
+static uint8_t period_started = 0;
+
+static float rms_result[6][MAX_RMS];
+static uint16_t rms_index = 0;
+volatile uint8_t uartReady = 1;
+volatile uint8_t adcDataReady = 0;
+
+char msg[128];
+/* Transmit buffer for RMS message - must persist while DMA transmits */
+static char rms_tx_buf[128];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+float calculate_rms(float *buffer, uint16_t samples)
+{
+    if (samples == 0)
+        return 0.0f;
 
+    float sum = 0.0f;
+
+    for (uint16_t i = 0; i < samples; i++)
+        sum += buffer[i] * buffer[i];
+
+    return sqrtf(sum / samples);
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-volatile uint8_t uartReady = 1;
+
 /* USER CODE END 0 */
 
 /**
@@ -131,6 +163,79 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    // Esperar a que haya datos nuevos de ADC
+    if (!adcDataReady) {
+      continue;
+    }
+
+    // Copiar datos ADC de forma atómica para evitar carreras con ISR
+    ADC_MeasurementData_t adcData;
+    __disable_irq();
+    adcData = adcIncData;
+    adcDataReady = 0;
+    __enable_irq();
+
+    // === 1) Usar v1 como señal de tensión para cruce por cero ===
+    float v1_sample = (float)adcData.channels[0] - OFFSET; // Canal 0 de ADC1
+
+    // === 2) Guardar en buffer para RMS ===
+    if (sample_index < MAX_SAMPLES) {
+      for (int channel = 0; channel < 6; channel++) {
+        sample_buffer[channel][sample_index] = (float)adcData.channels[channel] - OFFSET;
+      }
+      sample_index++;
+    }
+
+    // === 3) Detector de cruce por cero con histéresis ===
+    // cruce ascendente (negativo a positivo)
+    if (!period_started) {
+      if (v1_last_sample < -HYST && v1_sample > HYST) {
+        // comienzo de periodo
+        for (int channel = 0; channel < 6; channel++) {
+          sample_buffer[channel][sample_index] =
+              (float)adcData.channels[channel] - OFFSET;
+        }
+        sample_index++;
+        period_started = 1;
+      }
+    } else {
+      // si se cruza nuevamente → fin de periodo
+      if (v1_last_sample < -HYST && v1_sample > HYST) {
+        // === FIN DEL PERIODO ===
+
+        // 4) Calcular RMS del periodo
+        for (int channel = 0; channel < 6; channel++) {
+          rms_result[channel][rms_index] = calculate_rms(sample_buffer[channel], sample_index);
+        }
+
+        if (rms_index < (MAX_RMS - 1)) {
+          rms_index++;
+        } else {
+          // Buffer RMS lleno
+          rms_index = 0;
+        }
+
+        // limpiar buffer para siguiente periodo
+        sample_index = 0;
+        period_started = 1; // sigue en modo midiendo
+
+        // Enviar resultados RMS por UART si está listo
+        int len = 0;
+        for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(rms_tx_buf); ++ch) {
+          len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%u ",
+                          (unsigned int)ch, (unsigned int)rms_result[ch][rms_index]);
+        }
+        if (len < (int)sizeof(rms_tx_buf)) {
+          len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
+        }
+        if (len > 0 && uartReady) {
+          HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
+          uartReady = 0;
+        }
+      }
+    }
+
+    v1_last_sample = v1_sample;
   }
   /* USER CODE END 3 */
 }
@@ -187,34 +292,35 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     return;
   }
 
+  /* Unpack DMA multimode buffer into adcData struct (6 channels)
+   * lower 16 bits = ADC1 sample -> channels[0..PER_ADC_CHANNEL_COUNT-1]
+   * upper 16 bits = ADC2 sample -> channels[PER_ADC_CHANNEL_COUNT..(2*PER_ADC_CHANNEL_COUNT-1)]
+   */
   for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT; ++i) {
     uint32_t packed = adc_dma_buf[i];
-    adc1_samples[i] = (uint16_t)(packed & 0xFFFFU);
-    adc2_samples[i] = (uint16_t)((packed >> 16) & 0xFFFFU);
+    uint16_t s1 = (uint16_t)(packed & 0xFFFFU);
+    uint16_t s2 = (uint16_t)((packed >> 16) & 0xFFFFU);
+
+    adcIncData.channels[i] = s1;
+    adcIncData.channels[i + PER_ADC_CHANNEL_COUNT] = s2;
   }
 
-  char msg[128];
+  /* Prepare a single message with all 6 channels taken from adcData */
   int len = 0;
-
-  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
+  for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(msg); ++ch) {
     len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
-                    (unsigned int)i, (unsigned int)adc1_samples[i]);
-  }
-  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT && len < (int)sizeof(msg); ++i) {
-    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
-                    (unsigned int)(i + PER_ADC_CHANNEL_COUNT),
-                    (unsigned int)adc2_samples[i]);
+                    (unsigned int)ch, (unsigned int)adcIncData.channels[ch]);
   }
   if (len < (int)sizeof(msg)) {
-    msg[len++] = '\r';
-  }
-  if (len < (int)sizeof(msg)) {
-    msg[len++] = '\n';
+    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "\r\n");
   }
   if (len > 0 && uartReady) {
     HAL_UART_Transmit_DMA(&huart1, (uint8_t *)msg, (uint16_t)len);
     uartReady = 0;
   }
+
+  /* Signal main loop that new ADC data is ready */
+  adcDataReady = 1;
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
