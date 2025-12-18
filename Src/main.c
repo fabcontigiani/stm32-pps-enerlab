@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
+#include "mcp4131.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -76,12 +77,16 @@ volatile uint8_t adcDataReady = 0;
 char msg[128];
 /* Transmit buffer for RMS message - must persist while DMA transmits */
 static char rms_tx_buf[128];
+
+/* MCP4131 Digital Potentiometer handles */
+static MCP4131_HandleTypeDef hpot3;  /* CS3 */
+static MCP4131_HandleTypeDef hpot4;  /* CS4 */
+static MCP4131_HandleTypeDef hpot5;  /* CS5 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void writeWiper(uint16_t chipSelect, uint16_t wiperValue);
 float calculate_rms(float *buffer, uint16_t samples);
 /* USER CODE END PFP */
 
@@ -145,7 +150,13 @@ int main(void)
     Error_Handler();
   }
 
-  int loop_counter = 0;
+  /* Initialize MCP4131 digital potentiometers */
+  MCP4131_Init(&hpot3, &hspi1, SPI1_CS3_GPIO_Port, SPI1_CS3_Pin);
+  MCP4131_Init(&hpot4, &hspi1, SPI1_CS4_GPIO_Port, SPI1_CS4_Pin);
+  MCP4131_Init(&hpot5, &hspi1, SPI1_CS5_GPIO_Port, SPI1_CS5_Pin);
+
+  uint8_t wiper_value = 0;
+  uint8_t pot_index = 0;  /* Which potentiometer to update this cycle (0, 1, 2) */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -155,11 +166,29 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    writeWiper(SPI1_CS3_Pin, loop_counter);
-    writeWiper(SPI1_CS4_Pin, loop_counter);
-    writeWiper(SPI1_CS5_Pin, loop_counter);
-
-    loop_counter = (loop_counter + 1) % 256; // Incrementar valor del wiper
+    /* Update one potentiometer per cycle via DMA (round-robin to avoid bus conflicts) */
+    switch (pot_index) {
+      case 0:
+        if (MCP4131_IsReady(&hpot3)) {
+          MCP4131_WriteWiper_DMA(&hpot3, wiper_value);
+          pot_index = 1;
+        }
+        break;
+      case 1:
+        if (MCP4131_IsReady(&hpot4)) {
+          MCP4131_WriteWiper_DMA(&hpot4, wiper_value);
+          pot_index = 2;
+        }
+        break;
+      case 2:
+        if (MCP4131_IsReady(&hpot5)) {
+          MCP4131_WriteWiper_DMA(&hpot5, wiper_value);
+          pot_index = 0;
+          /* All 3 pots updated, increment wiper value for next round */
+          wiper_value = (wiper_value + 1) % (MCP4131_WIPER_MAX + 1);
+        }
+        break;
+    }
 
     // Esperar a que haya datos nuevos de ADC
     if (!adcDataReady) {
@@ -327,6 +356,19 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   }
 }
 
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
+  if (hspi->Instance == SPI1) {
+    /* Check which potentiometer completed and release its CS */
+    if (hpot3.busy && hpot3.hspi == hspi) {
+      MCP4131_TxCpltCallback(&hpot3);
+    } else if (hpot4.busy && hpot4.hspi == hspi) {
+      MCP4131_TxCpltCallback(&hpot4);
+    } else if (hpot5.busy && hpot5.hspi == hspi) {
+      MCP4131_TxCpltCallback(&hpot5);
+    }
+  }
+}
+
 float calculate_rms(float *buffer, uint16_t samples)
 {
     if (samples == 0)
@@ -340,13 +382,6 @@ float calculate_rms(float *buffer, uint16_t samples)
     return sqrtf(sum / samples);
 }
 
-void writeWiper(uint16_t chipSelect, uint16_t wiperValue) {
-  HAL_GPIO_WritePin(SPI1_CS3_GPIO_Port, chipSelect, GPIO_PIN_RESET); // CS LOW
-  uint16_t command = 0x0000 | (ADDRESS_WIPER0 << 4) | (COMMAND_WRITE << 2);
-  uint16_t data = 0x0000 | (command << 8) | wiperValue; 
-  HAL_SPI_Transmit_DMA(&hspi1, (uint8_t *)&data, sizeof(data));
-  HAL_GPIO_WritePin(SPI1_CS3_GPIO_Port, chipSelect, GPIO_PIN_SET); // CS HIGH
-}
 /* USER CODE END 4 */
 
 /**
