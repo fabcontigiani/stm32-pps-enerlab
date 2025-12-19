@@ -155,7 +155,9 @@ int main(void)
   MCP4131_Init(&hpot4, &hspi1, SPI1_CS4_GPIO_Port, SPI1_CS4_Pin);
   MCP4131_Init(&hpot5, &hspi1, SPI1_CS5_GPIO_Port, SPI1_CS5_Pin);
 
-  uint8_t wiper_value = 0;
+  /* Wiper percentage levels: 0%, 25%, 50%, 75%, 100% */
+  const uint8_t wiper_levels[5] = {0, 32, 64, 96, 128};
+  uint8_t wiper_index = 0;
   uint8_t pot_index = 0;  /* Which potentiometer to update this cycle (0, 1, 2) */
   /* USER CODE END 2 */
 
@@ -170,22 +172,22 @@ int main(void)
     switch (pot_index) {
       case 0:
         if (MCP4131_IsReady(&hpot3)) {
-          MCP4131_WriteWiper_DMA(&hpot3, wiper_value);
+          MCP4131_WriteWiper_DMA(&hpot3, wiper_levels[wiper_index]);
           pot_index = 1;
         }
         break;
       case 1:
         if (MCP4131_IsReady(&hpot4)) {
-          MCP4131_WriteWiper_DMA(&hpot4, wiper_value);
+          MCP4131_WriteWiper_DMA(&hpot4, wiper_levels[wiper_index]);
           pot_index = 2;
         }
         break;
       case 2:
         if (MCP4131_IsReady(&hpot5)) {
-          MCP4131_WriteWiper_DMA(&hpot5, wiper_value);
+          MCP4131_WriteWiper_DMA(&hpot5, wiper_levels[wiper_index]);
           pot_index = 0;
-          /* All 3 pots updated, increment wiper value for next round */
-          wiper_value = (wiper_value + 1) % (MCP4131_WIPER_MAX + 1);
+          /* All 3 pots updated, move to next percentage level */
+          wiper_index = (wiper_index + 1) % 5;
         }
         break;
     }
