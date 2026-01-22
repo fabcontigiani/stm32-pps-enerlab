@@ -88,6 +88,9 @@ static MCP4131_HandleTypeDef hpot5;  /* CS5 */
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 float calculate_rms(float *buffer, uint16_t samples);
+
+void vdda_calibrated(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -165,32 +168,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    if(!adc_calibrated && flag_adc_ready) {
+      vdda_calibrated();
+      continue;
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* Update one potentiometer per cycle via DMA (round-robin to avoid bus conflicts) */
-    switch (pot_index) {
-      case 0:
-        if (MCP4131_IsReady(&hpot3)) {
-          MCP4131_WriteWiper_DMA(&hpot3, wiper_levels[wiper_index]);
-          pot_index = 1;
-        }
-        break;
-      case 1:
-        if (MCP4131_IsReady(&hpot4)) {
-          MCP4131_WriteWiper_DMA(&hpot4, wiper_levels[wiper_index]);
-          pot_index = 2;
-        }
-        break;
-      case 2:
-        if (MCP4131_IsReady(&hpot5)) {
-          MCP4131_WriteWiper_DMA(&hpot5, wiper_levels[wiper_index]);
-          pot_index = 0;
-          /* All 3 pots updated, move to next percentage level */
-          wiper_index = (wiper_index + 1) % 5;
-        }
-        break;
-    }
 
     // Esperar a que haya datos nuevos de ADC
     if (!adcDataReady) {
@@ -382,6 +366,21 @@ float calculate_rms(float *buffer, uint16_t samples)
         sum += buffer[i] * buffer[i];
 
     return sqrtf(sum / samples);
+}
+
+void vdda_calibrated(void) {
+  ADC_MeasurementData_t adcData;
+  __disable_irq();
+  adcData = adcIncData;
+  flag_adc_ready = 0;
+  __enable_irq();
+
+  uint16_t adc_vrefint = adcData.channels[3];
+
+  vdda = (1.21 * 4095.0f) / adc_vrefint;
+
+  adc_calibrated = 1;
+  flag_adc_ready = 0;
 }
 
 /* USER CODE END 4 */
