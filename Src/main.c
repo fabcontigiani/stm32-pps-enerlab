@@ -46,7 +46,8 @@ typedef struct {
 #define TOTAL_CHANNELS        6U
 #define TOTAL_PHASES          3U
 #define MAX_SAMPLES           120  // Cantidad máxima de muestras por periodo
-#define MAX_RMS               128    // Cantidad muestras RMS por canal para enviar por UART
+#define MAX_RMS               128    // Cantidad muestras RMS por canal
+#define MAX_RMS_PROM          10    // Cantidad de valores RMS promediados
 #define HYST                  40    // Histéresis para cruce (cuentas ADC)
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
@@ -92,7 +93,16 @@ static uint8_t calculos_ready = 0;
 static int16_t sample_buffer[TOTAL_CHANNELS][MAX_SAMPLES];  //se almacenan muestras de un periodo
 static float rms_buffer[TOTAL_CHANNELS][MAX_RMS];           //se almacenan valores RMS de un periodo
 static float P_buffer[TOTAL_PHASES][MAX_RMS];               //se almacenan valores de potencia activa por periodo
-static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
+
+static float rms_prom_buffer[TOTAL_CHANNELS][MAX_RMS_PROM];      //se almacenan valores RMS promediados
+static float P_prom_buffer[TOTAL_PHASES][MAX_RMS_PROM];          //se almacenan valores de potencia activa promediados
+
+static float rms_total[TOTAL_CHANNELS];
+static float P_total[TOTAL_PHASES];
+static float S[TOTAL_PHASES];
+static float FP[TOTAL_PHASES];
+
+//static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
 
 static int16_t i_max[TOTAL_PHASES] = {0,0,0};  //se almacena el pico maximo de corriente de cada fase por periodo
 static int16_t i_min[TOTAL_PHASES] = {0,0,0};  //se almacena el pico minimo de corriente de cada fase por periodo
@@ -111,6 +121,7 @@ static const uint8_t valid_channels[TOTAL_CHANNELS] = {0,1,2,4,5,6};
 /*indices*/
 static uint8_t sample_index = 0;
 static int16_t rms_index = -1;
+static int16_t rms_prom_index = -1;
 
 
 static float vdda = 3.3f;
@@ -127,6 +138,7 @@ uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
 float calculate_gain(uint8_t wiper_position, uint8_t invertido);
 
 static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples, float gain);
+static float calculate_mean(float *buffer, uint8_t samples);
 
 void vdda_calibrated(void);
 
@@ -275,31 +287,53 @@ int main(void)
               rms_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_rms(sample_buffer[ph],sample_index);
               rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = calculate_rms(sample_buffer[ph + TOTAL_PHASES],sample_index);
 
-              rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]]);
-
+              //rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]]);
+              /*
               if(ph == 1){
                 rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
               }else{
                 rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
               }
-              
+              */
+
+              rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_active_power(sample_buffer[ph], sample_buffer[ph+TOTAL_PHASES], sample_index, gain_table[ph]);
-
-              
-            }
-
-                      
+            }        
           }
 
-          //FALTA:
-          // se calcula RMS, Potencia activa, Potenica aparente y cos phi para cada canal
+          if(rms_index == MAX_RMS - 1){
+            rms_prom_index = (rms_prom_index + 1) % MAX_RMS_PROM;
+            
+            for(uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
+              rms_prom_buffer[ph][rms_prom_index] = calculate_mean(rms_buffer[ph], 1 + rms_index - count_cambio_wiper[ph]);
+              rms_prom_buffer[ph + TOTAL_PHASES][rms_prom_index] = calculate_mean(rms_buffer[ph + TOTAL_PHASES], 1 + rms_index - count_cambio_wiper[ph + TOTAL_PHASES]);
 
-          //FALTA: ENVIAR DATOS POR UART
-          
-          //FALTA: CALCULAR NUEVA GANANCIA DE CORRIENTE
-          
-          calculos_ready = 1;
-          adc_calibrated = 0; // 0 para volver a calibrar Vdda
+              //rms_real[ph] = adc_to_voltage(rms_prom_buffer[ph][rms_prom_index]);
+
+              P_prom_buffer[ph][rms_prom_index] = calculate_mean(P_buffer[ph], 1 + rms_index - count_cambio_wiper[ph]);
+            }
+          }
+
+          if(rms_prom_index == MAX_RMS_PROM - 1){
+            for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
+              rms_total[ph] = calculate_mean(rms_prom_buffer[ph], MAX_RMS_PROM);
+              rms_total[ph + TOTAL_PHASES] = calculate_mean(rms_prom_buffer[ph + TOTAL_PHASES], MAX_RMS_PROM);
+
+              rms_total[ph] = adc_to_voltage(rms_total[ph]);
+              
+              P_total[ph] = calculate_mean(P_prom_buffer[ph], MAX_RMS_PROM);
+
+              S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
+
+              FP[ph] = P_total[ph] / S[ph];
+
+            }
+
+            //rms_prom_index = 0;
+            calculos_ready = 1; // listo para enviar por UART
+            adc_calibrated = 0; // 0 para volver a calibrar Vdda
+
+          }
         }
       }
     }
@@ -494,7 +528,6 @@ void vdda_calibrated(void) {
   vdda = (1.21 * 4095.0f) / adc_vrefint;
 
   adc_calibrated = 1;
-  flag_adc_ready = 0;
 }
 
 static float adc_to_voltage(float adc_value)
@@ -585,7 +618,17 @@ static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_cor
   return ((acc / (float) samples) * (vdda * vdda * 2000.f * 0.08153905715f) / (gain * 33.f * 4095.f));
 }
 
+static float calculate_mean(float *buffer, uint8_t samples)
+{
+  if (samples == 0) return 0.0f;
 
+  float acc = 0.0f;
+  for (uint16_t i = 0; i < samples; i++) {
+      acc += buffer[i];
+  }
+
+  return acc / (float)samples;
+}
 
 /* USER CODE END 4 */
 
