@@ -30,23 +30,27 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
-#include "mcp4131.h"
+#include "mcp4131.c"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef struct {
-  uint16_t channels[6];
+  uint16_t channels[8];
 } ADC_MeasurementData_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PER_ADC_CHANNEL_COUNT 3U
-#define MAX_SAMPLES   50  // Cantidad máxima de muestras por periodo
-#define MAX_RMS       10    // Cantidad muestras RMS por canal para enviar por UART
-#define HYST          50    // Histéresis para cruce (cuentas ADC)
-#define OFFSET        2048  // adc de 2^12 = 4096 bits -> offset = 2^12 / 2
+#define PER_ADC_CHANNEL_COUNT 4U
+#define TOTAL_CHANNELS        6U
+#define TOTAL_PHASES          3U
+#define MAX_SAMPLES           120  // Cantidad máxima de muestras por periodo
+#define MAX_RMS               128    // Cantidad muestras RMS por canal para enviar por UART
+#define HYST                  40    // Histéresis para cruce (cuentas ADC)
+#define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
+#define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
+#define TOTAL_GAIN_CURRENT    7U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -57,22 +61,12 @@ typedef struct {
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+
 /* ADC multimode DMA buffer: each entry is a 32-bit word where
  * lower 16 bits = ADC1 sample, upper 16 bits = ADC2 sample.
  */
 static uint32_t adc_dma_buf[PER_ADC_CHANNEL_COUNT];
 static ADC_MeasurementData_t adcIncData;
-
-static float sample_buffer[6][MAX_SAMPLES];
-static uint16_t sample_index = 0;
-
-static float v1_last_sample = 0;
-static uint8_t period_started = 0;
-
-static float rms_result[6][MAX_RMS];
-static uint16_t rms_index = 0;
-volatile uint8_t uartReady = 1;
-volatile uint8_t adcDataReady = 0;
 
 char msg[128];
 /* Transmit buffer for RMS message - must persist while DMA transmits */
@@ -82,14 +76,58 @@ static char rms_tx_buf[128];
 static MCP4131_HandleTypeDef hpot3;  /* CS3 */
 static MCP4131_HandleTypeDef hpot4;  /* CS4 */
 static MCP4131_HandleTypeDef hpot5;  /* CS5 */
+
+/*flags*/
+volatile uint8_t flag_adc_ready = 0;
+volatile uint8_t uartReady = 1;
+static uint8_t adc_calibrated = 0;
+static uint8_t en_region_alta = 0;
+static uint8_t muestreo = 0;
+static uint8_t primer_periodo = 1;
+static uint8_t calculos_ready = 0;
+
+
+
+/*buffers*/
+static int16_t sample_buffer[TOTAL_CHANNELS][MAX_SAMPLES];  //se almacenan muestras de un periodo
+static float rms_buffer[TOTAL_CHANNELS][MAX_RMS];           //se almacenan valores RMS de un periodo
+static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
+
+static int16_t i_max[TOTAL_PHASES] = {0,0,0};  //se almacena el pico maximo de corriente de cada fase por periodo
+static int16_t i_min[TOTAL_PHASES] = {0,0,0};  //se almacena el pico minimo de corriente de cada fase por periodo
+
+
+static int8_t wiper[TOTAL_PHASES] = {6, 6, 6};
+static uint8_t cambio_wiper[TOTAL_PHASES] = {0, 0, 0};
+static uint8_t count_cambio_wiper[TOTAL_PHASES] = {0, 0, 0};
+const uint8_t wiper_position[TOTAL_GAIN_CURRENT] = {64, 85, 102, 113, 120, 124, 126};
+const uint8_t wiper_position_reverse[TOTAL_GAIN_CURRENT] = {64, 43, 26, 15, 8, 4, 2};
+static float gain_table[TOTAL_PHASES] = {1, 1, 1};
+
+
+static const uint8_t valid_channels[TOTAL_CHANNELS] = {0,1,2,4,5,6};
+
+/*indices*/
+static uint8_t sample_index = 0;
+static int16_t rms_index = -1;
+
+
+static float vdda = 3.3f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-float calculate_rms(float *buffer, uint16_t samples);
+static float calculate_rms(int16_t *buffer, uint8_t samples);
+static float adc_to_voltage(float adc_value);
+static float adc_to_current(float adc_value, float gain);
+void AdjustCurrentGain_Wiper(void);
+uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
+float calculate_gain(uint8_t wiper_position, uint8_t invertido);
 
 void vdda_calibrated(void);
+
+  
 
 /* USER CODE END PFP */
 
@@ -148,36 +186,34 @@ int main(void)
   HAL_TIM_Base_Start(&htim3); // Start Timer3 (Trigger Source For ADC1)
 
   HAL_ADC_Start(&hadc2);
-  if (HAL_ADCEx_MultiModeStart_DMA(&hadc1, adc_dma_buf, PER_ADC_CHANNEL_COUNT) != HAL_OK) {
-    /* Start Error */
-    Error_Handler();
-  }
+  HAL_ADCEx_MultiModeStart_DMA(&hadc1, adc_dma_buf, PER_ADC_CHANNEL_COUNT);
 
   /* Initialize MCP4131 digital potentiometers */
   MCP4131_Init(&hpot3, &hspi1, SPI1_CS3_GPIO_Port, SPI1_CS3_Pin);
   MCP4131_Init(&hpot4, &hspi1, SPI1_CS4_GPIO_Port, SPI1_CS4_Pin);
   MCP4131_Init(&hpot5, &hspi1, SPI1_CS5_GPIO_Port, SPI1_CS5_Pin);
 
-  /* Wiper percentage levels: 0%, 25%, 50%, 75%, 100% */
-  const uint8_t wiper_levels[5] = {0, 32, 64, 96, 128};
-  uint8_t wiper_index = 0;
-  uint8_t pot_index = 0;  /* Which potentiometer to update this cycle (0, 1, 2) */
+
+
+
+
+  int16_t v1 = 0; // Tension fase 1 -> referencia para cruce por cero
+  uint8_t cruce_ascendente = 0;
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    // Calibra Vdda y termina el ciclo
     if(!adc_calibrated && flag_adc_ready) {
       vdda_calibrated();
       continue;
     }
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
 
     // Esperar a que haya datos nuevos de ADC
-    if (!adcDataReady) {
+    if(!flag_adc_ready) {
       continue;
     }
 
@@ -185,53 +221,127 @@ int main(void)
     ADC_MeasurementData_t adcData;
     __disable_irq();
     adcData = adcIncData;
-    adcDataReady = 0;
+    flag_adc_ready = 0;
     __enable_irq();
 
-    // === 1) Usar v1 como señal de tensión para cruce por cero ===
-    float v1_sample = (float)adcData.channels[0] - OFFSET; // Canal 0 de ADC1
+    // === 1. Leer muestra ADC (referencia para inicio de periodo) ===
+    v1 = adcData.channels[0] - adcData.channels[7];
 
-    // === 2) Guardar en buffer para RMS ===
-    if (sample_index < MAX_SAMPLES) {
-      for (int channel = 0; channel < 6; channel++) {
-        sample_buffer[channel][sample_index] = (float)adcData.channels[channel] - OFFSET;
-      }
-      sample_index++;
+    // === 2. Detección de cruce por cero con histéresis ===
+    cruce_ascendente = 0;
+
+    if (!en_region_alta && (v1 > HYST)) {
+      en_region_alta = 1;
+      cruce_ascendente = 1;
+    }
+    else if (en_region_alta && (v1 < -HYST)) {
+      en_region_alta = 0;
     }
 
-    // === 3) Detector de cruce por cero con histéresis ===
-    // cruce ascendente (negativo a positivo)
-    if (!period_started) {
-      if (v1_last_sample < -HYST && v1_sample > HYST) {
-        // comienzo de periodo
-        for (int channel = 0; channel < 6; channel++) {
-          sample_buffer[channel][sample_index] =
-              (float)adcData.channels[channel] - OFFSET;
-        }
-        sample_index++;
-        period_started = 1;
-      }
-    } else {
-      // si se cruza nuevamente → fin de periodo
-      if (v1_last_sample < -HYST && v1_sample > HYST) {
-        // === FIN DEL PERIODO ===
-
-        // 4) Calcular RMS del periodo
-        for (int channel = 0; channel < 6; channel++) {
-          rms_result[channel][rms_index] = calculate_rms(sample_buffer[channel], sample_index);
-        }
-
-        if (rms_index < (MAX_RMS - 1)) {
-          rms_index++;
-        } else {
-          // Buffer RMS lleno
-          rms_index = 0;
-        }
-
-        // limpiar buffer para siguiente periodo
+    // === 3. Gestión de inicio / fin de período ===
+    if (cruce_ascendente){
+      if (!muestreo) {
+        // ---- INICIO DE PERÍODO ----
+        muestreo = 1;
         sample_index = 0;
-        period_started = 1; // sigue en modo midiendo
+      }
+      else {
+        // ---- FIN DE PERÍODO ----
+        muestreo = 0;
 
+        if (primer_periodo) {
+          // descartar el primer período
+          primer_periodo = 0;
+        }
+        else {
+          rms_index = (rms_index + 1) % MAX_RMS;
+
+          if(!rms_index){
+            count_cambio_wiper[0] = 0;
+            count_cambio_wiper[1] = 0;
+            count_cambio_wiper[2] = 0;
+          }
+
+          // Evalua saturacion o cambio de wiper
+          AdjustCurrentGain_Wiper();
+
+          // Si no se cambia wiper de la fase ph
+          // Calcula Vrms, Irms, Pot activa, Pot aparente y cos(phi)
+          for(uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
+            if(!cambio_wiper[ph]){
+              rms_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_rms(sample_buffer[ph],sample_index);
+              rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = calculate_rms(sample_buffer[ph + TOTAL_PHASES],sample_index);
+
+              rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]]);
+
+              if(ph == 1){
+                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
+              }else{
+                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
+              }  
+            }
+                      
+          }
+
+          //FALTA:
+          // se calcula RMS, Potencia activa, Potenica aparente y cos phi para cada canal
+
+          //FALTA: ENVIAR DATOS POR UART
+          
+          //FALTA: CALCULAR NUEVA GANANCIA DE CORRIENTE
+          
+          calculos_ready = 1;
+          adc_calibrated = 0; // 0 para volver a calibrar Vdda
+        }
+      }
+    }
+
+    // === 4. Acumulación de muestras SOLO dentro del período ===
+    if (muestreo) {
+      if (sample_index < MAX_SAMPLES) {
+        for (uint8_t ch = 0; ch < TOTAL_CHANNELS; ch++) {
+          //en el buffer "valid_channels" se tienen los canales de tension y corriente (se omite ch3 con VREFINT y ch7 con OFFSET)
+          sample_buffer[ch][sample_index] = (int16_t)adcData.channels[valid_channels[ch]] - (int16_t)adcData.channels[7];
+        }
+
+        // Cálculo de valores máximos y mínimos para cada fase (canales de corriente)
+        if (sample_index == 0){
+          // Primera muestra del período -> reset de picos de corriente
+          for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++){
+            i_max[ph] = 0;
+            i_min[ph] = 0;
+          }
+        }else{
+          // Actualiza máximos y mínimos de corriente durante el período
+          for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++){
+            if(sample_buffer[ph+TOTAL_PHASES][sample_index] > i_max[ph]){
+              i_max[ph] = sample_buffer[ph+TOTAL_PHASES][sample_index];
+            }else if(sample_buffer[ph+TOTAL_PHASES][sample_index] < i_min[ph]){
+              i_min[ph] = sample_buffer[ph+TOTAL_PHASES][sample_index];
+            }
+          }
+        }
+        // Avanza al siguiente sample del período
+        sample_index++;
+      }
+      else {
+        // seguridad: overflow del buffer
+        muestreo = 0;
+        sample_index = 0;
+      }
+    }
+
+  
+
+
+
+
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+
+        /*
+        //UART FABRI
         // Enviar resultados RMS por UART si está listo
         int len = 0;
         for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(rms_tx_buf); ++ch) {
@@ -244,11 +354,7 @@ int main(void)
         if (len > 0 && uartReady) {
           HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
           uartReady = 0;
-        }
-      }
-    }
-
-    v1_last_sample = v1_sample;
+        }*/
   }
   /* USER CODE END 3 */
 }
@@ -305,20 +411,18 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     return;
   }
 
-  /* Unpack DMA multimode buffer into adcData struct (6 channels)
+  /* Unpack DMA multimode buffer into adcData struct (8 channels)
    * lower 16 bits = ADC1 sample -> channels[0..PER_ADC_CHANNEL_COUNT-1]
    * upper 16 bits = ADC2 sample -> channels[PER_ADC_CHANNEL_COUNT..(2*PER_ADC_CHANNEL_COUNT-1)]
    */
-  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT; ++i) {
+  for (uint32_t i = 0; i < PER_ADC_CHANNEL_COUNT; i++) {
     uint32_t packed = adc_dma_buf[i];
-    uint16_t s1 = (uint16_t)(packed & 0xFFFFU);
-    uint16_t s2 = (uint16_t)((packed >> 16) & 0xFFFFU);
-
-    adcIncData.channels[i] = s1;
-    adcIncData.channels[i + PER_ADC_CHANNEL_COUNT] = s2;
+    adcIncData.channels[i] = (uint16_t)(packed & 0xFFFF);
+    adcIncData.channels[i + PER_ADC_CHANNEL_COUNT] = (uint16_t)((packed >> 16) & 0xFFFF);
   }
 
-  /* Prepare a single message with all 6 channels taken from adcData */
+  /*
+  // Prepare a single message with all 6 channels taken from adcData
   int len = 0;
   for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(msg); ++ch) {
     len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
@@ -331,20 +435,24 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     HAL_UART_Transmit_DMA(&huart1, (uint8_t *)msg, (uint16_t)len);
     uartReady = 0;
   }
+  */
 
   /* Signal main loop that new ADC data is ready */
-  adcDataReady = 1;
+  flag_adc_ready = 1;
 }
 
+/*
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART1) {
     uartReady = 1;
   }
 }
+  */
+
 
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
   if (hspi->Instance == SPI1) {
-    /* Check which potentiometer completed and release its CS */
+    // Check which potentiometer completed and release its CS
     if (hpot3.busy && hpot3.hspi == hspi) {
       MCP4131_TxCpltCallback(&hpot3);
     } else if (hpot4.busy && hpot4.hspi == hspi) {
@@ -355,17 +463,15 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
   }
 }
 
-float calculate_rms(float *buffer, uint16_t samples)
-{
-    if (samples == 0)
-        return 0.0f;
 
-    float sum = 0.0f;
+static float calculate_rms(int16_t *buffer, uint8_t samples) {
+  if (samples == 0) return 0.0f;
 
-    for (uint16_t i = 0; i < samples; i++)
-        sum += buffer[i] * buffer[i];
-
-    return sqrtf(sum / samples);
+  float sum = 0.0f;
+  for (uint16_t i = 0; i < samples; i++) {
+      sum += buffer[i] * buffer[i];
+  }
+  return (sqrtf((float) sum / samples));
 }
 
 void vdda_calibrated(void) {
@@ -381,6 +487,83 @@ void vdda_calibrated(void) {
 
   adc_calibrated = 1;
   flag_adc_ready = 0;
+}
+
+static float adc_to_voltage(float adc_value)
+{
+    return ((float)adc_value * vdda * 0.08153905715f);//adc_value*(197.7/0.5842)*(vdda/4095)
+}
+
+static float adc_to_current(float adc_value, float gain)
+{
+    //return ((float)adc_value * (vdda / 2048) * (30.303 / gain) * (20.0f));
+    //return (float) adc_value * (vdda/2048) * (2000/(gain*33));
+    return (float) ((adc_value * vdda * 2000.f) / (gain * 33.f * 4095.f));
+}
+
+void AdjustCurrentGain_Wiper(void){
+  for(uint8_t phase = 0; phase < TOTAL_PHASES; phase++){
+    cambio_wiper[phase] = 0;
+
+    // Condicionales para detectar si se debe cambiar el wiper
+    if(i_max[phase] > I_MAX || i_min[phase] < -I_MAX){
+      cambio_wiper[phase] = 1;
+      wiper[phase]--;
+      if(wiper[phase] < 0){
+        wiper[phase] = 0;
+      }
+    }else if(i_max[phase] < I_MIN && i_min[phase] > -I_MIN){
+      cambio_wiper[phase] = 1;
+      wiper[phase]++;
+      if(wiper[phase] > 6){
+        wiper[phase] = 6;
+        cambio_wiper[phase] = 0;
+      }
+    }
+    
+    if(rms_index == 0){
+      cambio_wiper[phase] = 1;
+      count_cambio_wiper[phase]++;
+    }
+
+    // Comunicacion con Pote Digital 
+    if(cambio_wiper[phase]){
+      count_cambio_wiper[phase]++;
+      
+      switch(phase){
+        case 0:
+          if (MCP4131_IsReady(&hpot3)) {
+            MCP4131_WriteWiper_DMA(&hpot3,wiper_position_reverse[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position_reverse[wiper[phase]], 1);
+          }
+          break;
+        case 1:
+          if (MCP4131_IsReady(&hpot4)) {
+            MCP4131_WriteWiper_DMA(&hpot4,wiper_position[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
+          }
+          break;
+        case 2:
+          if (MCP4131_IsReady(&hpot5)) {
+            MCP4131_WriteWiper_DMA(&hpot5,wiper_position_reverse[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position_reverse[wiper[phase]], 1);
+          }
+          break;
+      }
+    }
+  }
+}
+
+uint8_t reverse_vector(const uint8_t *vector, uint8_t index){
+  return (vector[TOTAL_GAIN_CURRENT- 1 - index]);
+}
+
+float calculate_gain(uint8_t wiper_position, uint8_t invertido){
+  if(invertido){
+    return (float) (128.f - wiper_position)/wiper_position;
+  }else{
+    return (float) wiper_position/(128.f - wiper_position);
+  }
 }
 
 /* USER CODE END 4 */

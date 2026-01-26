@@ -57,6 +57,49 @@
                 "cwd": "${workspaceFolder}"
             },
             "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "Start OpenOCD ST-Link",
+            "command": "openocd",
+            "args": [
+                "-f",
+                "interface/stlink.cfg",
+                "-f",
+                "target/stm32f1x.cfg",
+                "-c",
+                "init",
+                "-c",
+                "targets",
+                "-c",
+                "reset halt"
+            ],
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": "^.*$",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^Open On-Chip Debugger.*",
+                    "endsPattern": "^.*reset halt.*"
+                }
+            }
+        },
+        {
+            "type": "shell",
+            "label": "Stop OpenOCD",
+            "command": "taskkill",
+            "args": [
+                "/F",
+                "/IM",
+                "openocd.exe"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
         }
     ]
 }
