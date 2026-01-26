@@ -137,7 +137,7 @@ void AdjustCurrentGain_Wiper(void);
 uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
 float calculate_gain(uint8_t wiper_position, uint8_t invertido);
 
-static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples, float gain);
+static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples);
 static float calculate_mean(float *buffer, uint8_t samples);
 
 void vdda_calibrated(void);
@@ -297,7 +297,9 @@ int main(void)
               */
 
               rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
-              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_active_power(sample_buffer[ph], sample_buffer[ph+TOTAL_PHASES], sample_index, gain_table[ph]);
+              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_active_power(sample_buffer[ph], sample_buffer[ph+TOTAL_PHASES], sample_index);
+              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_voltage(P_buffer[ph][rms_index - count_cambio_wiper[ph]]);
+              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_current(P_buffer[ph][rms_index - count_cambio_wiper[ph]], gain_table[ph]);
             }        
           }
 
@@ -608,14 +610,14 @@ float calculate_gain(uint8_t wiper_position, uint8_t invertido){
 }
 
 
-static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples, float gain){
+static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples){
   if (samples == 0) return 0.0f;
 
   float acc = 0.0f;
   for (uint16_t n = 0; n < samples; n++) {
     acc += (float)buffer_tension[n] * (float)buffer_corriente[n];
   }
-  return ((acc / (float) samples) * (vdda * vdda * 2000.f * 0.08153905715f) / (gain * 33.f * 4095.f));
+  return (acc / (float) samples);
 }
 
 static float calculate_mean(float *buffer, uint8_t samples)
