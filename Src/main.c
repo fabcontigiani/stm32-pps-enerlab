@@ -91,6 +91,7 @@ static uint8_t calculos_ready = 0;
 /*buffers*/
 static int16_t sample_buffer[TOTAL_CHANNELS][MAX_SAMPLES];  //se almacenan muestras de un periodo
 static float rms_buffer[TOTAL_CHANNELS][MAX_RMS];           //se almacenan valores RMS de un periodo
+static float P_buffer[TOTAL_PHASES][MAX_RMS];               //se almacenan valores de potencia activa por periodo
 static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
 
 static int16_t i_max[TOTAL_PHASES] = {0,0,0};  //se almacena el pico maximo de corriente de cada fase por periodo
@@ -124,6 +125,8 @@ static float adc_to_current(float adc_value, float gain);
 void AdjustCurrentGain_Wiper(void);
 uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
 float calculate_gain(uint8_t wiper_position, uint8_t invertido);
+
+static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples, float gain);
 
 void vdda_calibrated(void);
 
@@ -278,8 +281,13 @@ int main(void)
                 rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
               }else{
                 rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
-              }  
+              }
+              
+              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_active_power(sample_buffer[ph], sample_buffer[ph+TOTAL_PHASES], sample_index, gain_table[ph]);
+
+              
             }
+
                       
           }
 
@@ -565,6 +573,19 @@ float calculate_gain(uint8_t wiper_position, uint8_t invertido){
     return (float) wiper_position/(128.f - wiper_position);
   }
 }
+
+
+static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples, float gain){
+  if (samples == 0) return 0.0f;
+
+  float acc = 0.0f;
+  for (uint16_t n = 0; n < samples; n++) {
+    acc += (float)buffer_tension[n] * (float)buffer_corriente[n];
+  }
+  return ((acc / (float) samples) * (vdda * vdda * 2000.f * 0.08153905715f) / (gain * 33.f * 4095.f));
+}
+
+
 
 /* USER CODE END 4 */
 
