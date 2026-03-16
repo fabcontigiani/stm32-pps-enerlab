@@ -52,6 +52,14 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
+
+#define V1_GAIN               (222.0f / (0.6505f * 4095.f))
+#define V2_GAIN               (222.0f / (0.6505f * 4095.f))
+#define V3_GAIN               (222.0f / (0.6580 * 4095.f))
+#define I1_GAIN               (-10.51f / (0.168f * 4095.f))
+#define I2_GAIN               (-10.51f / (0.164f * 4095.f))
+#define I3_GAIN               (-10.46f / (0.164f * 4095.f))
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -86,6 +94,8 @@ static uint8_t en_region_alta = 0;
 static uint8_t muestreo = 0;
 static uint8_t primer_periodo = 1;
 static uint8_t calculos_ready = 0;
+
+static uint8_t banderaMedicion = 0;
 
 
 
@@ -131,10 +141,10 @@ static float vdda = 3.3f;
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static float calculate_rms(int16_t *buffer, uint8_t samples);
-static float adc_to_voltage(float adc_value);
-static float adc_to_current(float adc_value, float gain);
+static float adc_to_voltage(float adc_value, uint8_t phase);
+static float adc_to_current(float adc_value, float gain, uint8_t phase);
 void AdjustCurrentGain_Wiper(void);
-uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
+//uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
 float calculate_gain(uint8_t wiper_position, uint8_t invertido);
 
 static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples);
@@ -207,9 +217,6 @@ int main(void)
   MCP4131_Init(&hpot3, &hspi1, SPI1_CS3_GPIO_Port, SPI1_CS3_Pin);
   MCP4131_Init(&hpot4, &hspi1, SPI1_CS4_GPIO_Port, SPI1_CS4_Pin);
   MCP4131_Init(&hpot5, &hspi1, SPI1_CS5_GPIO_Port, SPI1_CS5_Pin);
-
-
-
 
 
   int16_t v1 = 0; // Tension fase 1 -> referencia para cruce por cero
@@ -290,16 +297,18 @@ int main(void)
               //rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]]);
               /*
               if(ph == 1){
-                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
+                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
               }else{
-                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
+                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
               }
               */
 
-              rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph]);
+              rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_active_power(sample_buffer[ph], sample_buffer[ph+TOTAL_PHASES], sample_index);
-              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_voltage(P_buffer[ph][rms_index - count_cambio_wiper[ph]]);
-              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_current(P_buffer[ph][rms_index - count_cambio_wiper[ph]], gain_table[ph]);
+              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_voltage(P_buffer[ph][rms_index - count_cambio_wiper[ph]], ph);
+              P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_current(P_buffer[ph][rms_index - count_cambio_wiper[ph]], gain_table[ph], ph);
+
+              banderaMedicion = 1;
             }        
           }
 
@@ -321,16 +330,16 @@ int main(void)
               rms_total[ph] = calculate_mean(rms_prom_buffer[ph], MAX_RMS_PROM);
               rms_total[ph + TOTAL_PHASES] = calculate_mean(rms_prom_buffer[ph + TOTAL_PHASES], MAX_RMS_PROM);
 
-              rms_total[ph] = adc_to_voltage(rms_total[ph]);
+              rms_total[ph] = adc_to_voltage(rms_total[ph], ph);
               
               P_total[ph] = calculate_mean(P_prom_buffer[ph], MAX_RMS_PROM);
 
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
               FP[ph] = P_total[ph] / S[ph];
+              rms_prom_index = 0;
 
             }
-
             //rms_prom_index = 0;
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
@@ -532,16 +541,39 @@ void vdda_calibrated(void) {
   adc_calibrated = 1;
 }
 
-static float adc_to_voltage(float adc_value)
+static float adc_to_voltage(float adc_value, uint8_t phase)
 {
-    return ((float)adc_value * vdda * 0.08153905715f);//adc_value*(197.7/0.5842)*(vdda/4095)
+  // ECUACION: V = adc_value * (vdda/4095) * (Vi/Vo)
+
+  switch(phase){
+    case 0:
+      return (float)adc_value * vdda * V1_GAIN;
+      break;
+    case 1:
+      return (float)adc_value * vdda * V2_GAIN;
+      break;
+    case 2:
+      return (float)adc_value * vdda * V3_GAIN;
+      break;
+  }
+  // calculo antiguo, funciona bien
+  //return ((float)adc_value * vdda * 0.08153905715f);//adc_value*(197.7/0.5842)*(vdda/4095)
 }
 
-static float adc_to_current(float adc_value, float gain)
+static float adc_to_current(float adc_value, float gain, uint8_t phase)
 {
-    //return ((float)adc_value * (vdda / 2048) * (30.303 / gain) * (20.0f));
-    //return (float) adc_value * (vdda/2048) * (2000/(gain*33));
-    return (float) ((adc_value * vdda * 2000.f) / (gain * 33.f * 4095.f));
+  switch(phase){
+    case 0:
+      return (float) (adc_value * vdda / gain) * I1_GAIN;
+      break;
+    case 1:
+      return (float) (adc_value * vdda / gain) * I2_GAIN;
+      break;
+    case 2:
+      return (float) (adc_value * vdda / gain) * I3_GAIN;
+      break;
+  }
+    //return (float) ((adc_value * vdda * 2000.f) / (gain * 33.f * 4095.f));
 }
 
 void AdjustCurrentGain_Wiper(void){
@@ -597,9 +629,11 @@ void AdjustCurrentGain_Wiper(void){
   }
 }
 
+/*
 uint8_t reverse_vector(const uint8_t *vector, uint8_t index){
   return (vector[TOTAL_GAIN_CURRENT- 1 - index]);
 }
+*/
 
 float calculate_gain(uint8_t wiper_position, uint8_t invertido){
   if(invertido){
