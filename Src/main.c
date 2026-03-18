@@ -55,7 +55,7 @@ typedef struct {
 
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
-#define V3_GAIN               (222.0f / (0.6580 * 4095.f))
+#define V3_GAIN               (222.0f / (0.6580f * 4095.f))
 #define I1_GAIN               (-10.51f / (0.168f * 4095.f))
 #define I2_GAIN               (-10.51f / (0.164f * 4095.f))
 #define I3_GAIN               (-10.46f / (0.164f * 4095.f))
@@ -97,8 +97,6 @@ static uint8_t calculos_ready = 0;
 
 static uint8_t banderaMedicion = 0;
 
-
-
 /*buffers*/
 static int16_t sample_buffer[TOTAL_CHANNELS][MAX_SAMPLES];  //se almacenan muestras de un periodo
 static float rms_buffer[TOTAL_CHANNELS][MAX_RMS];           //se almacenan valores RMS de un periodo
@@ -112,7 +110,7 @@ static float P_total[TOTAL_PHASES];
 static float S[TOTAL_PHASES];
 static float FP[TOTAL_PHASES];
 
-//static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
+static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
 
 static int16_t i_max[TOTAL_PHASES] = {0,0,0};  //se almacena el pico maximo de corriente de cada fase por periodo
 static int16_t i_min[TOTAL_PHASES] = {0,0,0};  //se almacena el pico minimo de corriente de cada fase por periodo
@@ -294,7 +292,7 @@ int main(void)
               rms_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_rms(sample_buffer[ph],sample_index);
               rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = calculate_rms(sample_buffer[ph + TOTAL_PHASES],sample_index);
 
-              //rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]]);
+              rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]], ph);
               /*
               if(ph == 1){
                 rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
@@ -474,7 +472,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     adcIncData.channels[i + PER_ADC_CHANNEL_COUNT] = (uint16_t)((packed >> 16) & 0xFFFF);
   }
 
-  /*
+/*
   // Prepare a single message with all 6 channels taken from adcData
   int len = 0;
   for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(msg); ++ch) {
@@ -488,7 +486,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     HAL_UART_Transmit_DMA(&huart1, (uint8_t *)msg, (uint16_t)len);
     uartReady = 0;
   }
-  */
+*/
 
   /* Signal main loop that new ADC data is ready */
   flag_adc_ready = 1;
