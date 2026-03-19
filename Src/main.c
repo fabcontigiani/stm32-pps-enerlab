@@ -56,9 +56,9 @@ typedef struct {
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V3_GAIN               (222.0f / (0.6580f * 4095.f))
-#define I1_GAIN               (-10.51f / (0.168f * 4095.f))
-#define I2_GAIN               (-10.51f / (0.164f * 4095.f))
-#define I3_GAIN               (-10.46f / (0.164f * 4095.f))
+#define I1_GAIN               (-10.51f / (0.164f * 4095.f))
+#define I2_GAIN               (-10.46f / (0.164f * 4095.f))
+#define I3_GAIN               (-10.51f / (0.168f * 4095.f))
 
 /* USER CODE END PD */
 
