@@ -124,7 +124,7 @@ const uint8_t wiper_position_reverse[TOTAL_GAIN_CURRENT] = {64, 43, 26, 15, 8, 4
 static float gain_table[TOTAL_PHASES] = {1, 1, 1};
 
 
-static const uint8_t valid_channels[TOTAL_CHANNELS] = {0,1,2,4,5,6};
+static const uint8_t valid_channels[TOTAL_CHANNELS] = {0,1,2,6,4,5};
 
 /*indices*/
 static uint8_t sample_index = 0;
@@ -293,6 +293,7 @@ int main(void)
               rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = calculate_rms(sample_buffer[ph + TOTAL_PHASES],sample_index);
 
               rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]], ph);
+              rms_real[ph+TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
               /*
               if(ph == 1){
                 rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
@@ -604,19 +605,19 @@ void AdjustCurrentGain_Wiper(void){
       count_cambio_wiper[phase]++;
       
       switch(phase){
-        case 0:
+        case 1:
           if (MCP4131_IsReady(&hpot3)) {
             MCP4131_WriteWiper_DMA(&hpot3,wiper_position_reverse[wiper[phase]]);
             gain_table[phase] = calculate_gain(wiper_position_reverse[wiper[phase]], 1);
           }
           break;
-        case 1:
+        case 2:
           if (MCP4131_IsReady(&hpot4)) {
             MCP4131_WriteWiper_DMA(&hpot4,wiper_position[wiper[phase]]);
             gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
           }
           break;
-        case 2:
+        case 0:
           if (MCP4131_IsReady(&hpot5)) {
             MCP4131_WriteWiper_DMA(&hpot5,wiper_position_reverse[wiper[phase]]);
             gain_table[phase] = calculate_gain(wiper_position_reverse[wiper[phase]], 1);
