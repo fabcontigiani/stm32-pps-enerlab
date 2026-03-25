@@ -363,7 +363,7 @@ int main(void)
             i_max[ph] = 0;
             i_min[ph] = 0;
           }
-        }else{
+        }else{        //UART FABRI
           // Actualiza máximos y mínimos de corriente durante el período
           for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++){
             if(sample_buffer[ph+TOTAL_PHASES][sample_index] > i_max[ph]){
@@ -392,21 +392,22 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-        /*
-        //UART FABRI
-        // Enviar resultados RMS por UART si está listo
-        int len = 0;
-        for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(rms_tx_buf); ++ch) {
-          len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%u ",
-                          (unsigned int)ch, (unsigned int)rms_result[ch][rms_index]);
-        }
-        if (len < (int)sizeof(rms_tx_buf)) {
-          len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
-        }
-        if (len > 0 && uartReady) {
-          HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
-          uartReady = 0;
-        }*/
+    // Enviar resultados RMS por UART si está listo luego de cada periodo
+    if (banderaMedicion){
+      banderaMedicion = 0;
+      int len = 0;
+      for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(rms_tx_buf); ++ch) {
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%u ",
+                        (unsigned int)ch, (unsigned int)rms_result[ch][rms_index]);
+      }
+      if (len < (int)sizeof(rms_tx_buf)) {
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
+      }
+      if (len > 0 && uartReady) {
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
+        uartReady = 0;
+      }
+    }
   }
   /* USER CODE END 3 */
 }
