@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <math.h>
 #include "mcp4131.c"
+#include "ftoa.c"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,13 +53,20 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
-
+/*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V3_GAIN               (222.0f / (0.6580f * 4095.f))
-#define I1_GAIN               (-10.51f / (0.164f * 4095.f))
-#define I2_GAIN               (-10.46f / (0.164f * 4095.f))
-#define I3_GAIN               (-10.51f / (0.168f * 4095.f))
+#define I1_GAIN               (10.51f / (0.164f * 4095.f))
+#define I2_GAIN               (10.46f / (0.164f * 4095.f))
+#define I3_GAIN               (10.51f / (0.168f * 4095.f))
+*/
+#define V1_GAIN 1
+#define V2_GAIN 1
+#define V3_GAIN 1
+#define I1_GAIN 1
+#define I2_GAIN 1
+#define I3_GAIN 1
 
 /* USER CODE END PD */
 
@@ -307,7 +315,20 @@ int main(void)
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_voltage(P_buffer[ph][rms_index - count_cambio_wiper[ph]], ph);
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_current(P_buffer[ph][rms_index - count_cambio_wiper[ph]], gain_table[ph], ph);
 
-              banderaMedicion = 1;
+              int len = 0;
+              for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
+                char rms_str[24];
+                ftoa(rms_str, rms_real[ch], NULL);
+                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
+                                (unsigned int)ch, rms_str);
+              }
+              if (len < (int)sizeof(rms_tx_buf)) {
+                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
+              }
+              if (len > 0 && uartReady) {
+                HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
+                uartReady = 0;
+              }
             }        
           }
 
@@ -391,23 +412,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
-    // Enviar resultados RMS por UART si está listo luego de cada periodo
-    if (banderaMedicion){
-      banderaMedicion = 0;
-      int len = 0;
-      for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(rms_tx_buf); ++ch) {
-        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%u ",
-                        (unsigned int)ch, (unsigned int)rms_result[ch][rms_index]);
-      }
-      if (len < (int)sizeof(rms_tx_buf)) {
-        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
-      }
-      if (len > 0 && uartReady) {
-        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
-        uartReady = 0;
-      }
-    }
   }
   /* USER CODE END 3 */
 }
@@ -494,13 +498,12 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
   flag_adc_ready = 1;
 }
 
-/*
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART1) {
     uartReady = 1;
   }
 }
-  */
+
 
 
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
