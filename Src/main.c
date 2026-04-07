@@ -54,7 +54,12 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
-#define ZERO_CROSS_TIMEOUT    500000U // Conteo de muestras ADC para ~50 segundos (asumiendo 10kHz)
+
+
+#define ZERO_CROSS_TIMEOUT    500000U // timeout si no se detectan cruces por cero
+//se mide en cantidad de iteraciones del loop principal, no en tiempo real. 
+
+
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
