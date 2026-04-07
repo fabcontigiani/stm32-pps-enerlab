@@ -53,6 +53,7 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
+#define ZERO_CROSS_TIMEOUT    200U // Conteo de muestras ADC antes de iniciar medición sin cruce por cero
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -102,6 +103,7 @@ static uint8_t en_region_alta = 0;
 static uint8_t muestreo = 0;
 static uint8_t primer_periodo = 1;
 static uint8_t calculos_ready = 0;
+static uint16_t zero_cross_timeout_counter = 0;
 
 static uint8_t banderaMedicion = 0;
 
@@ -264,6 +266,17 @@ int main(void)
     }
     else if (en_region_alta && (v1 < -HYST)) {
       en_region_alta = 0;
+    }
+
+    // Si no hay cruce por cero durante un tiempo, forzar inicio de medición
+    if (!muestreo && !cruce_ascendente) {
+      if (++zero_cross_timeout_counter >= ZERO_CROSS_TIMEOUT) {
+        zero_cross_timeout_counter = 0;
+        muestreo = 1;
+        sample_index = 0;
+      }
+    } else if (cruce_ascendente) {
+      zero_cross_timeout_counter = 0;
     }
 
     // === 3. Gestión de inicio / fin de período ===
