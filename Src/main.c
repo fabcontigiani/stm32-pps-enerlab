@@ -29,7 +29,6 @@
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <math.h>
 #include "mcp4131.c"
 #include "ftoa.c"
@@ -54,12 +53,6 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
-
-
-#define ZERO_CROSS_TIMEOUT    500000U // timeout si no se detectan cruces por cero
-//se mide en cantidad de iteraciones del loop principal, no en tiempo real. 
-
-
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -68,12 +61,12 @@ typedef struct {
 #define I2_GAIN               (10.46f / (0.164f * 4095.f))
 #define I3_GAIN               (10.51f / (0.168f * 4095.f))
 */
-#define V1_GAIN 1
-#define V2_GAIN 1
-#define V3_GAIN 1
-#define I1_GAIN 1
-#define I2_GAIN 1
-#define I3_GAIN 1
+#define V1_GAIN 0.0827023862f
+#define V2_GAIN 0.0830879383f
+#define V3_GAIN 0.0819829418f
+#define I1_GAIN 0.0152659996f
+#define I2_GAIN 0.0154870071f
+#define I3_GAIN 0.0155418420f
 
 /* USER CODE END PD */
 
@@ -109,8 +102,8 @@ static uint8_t en_region_alta = 0;
 static uint8_t muestreo = 0;
 static uint8_t primer_periodo = 1;
 static uint8_t calculos_ready = 0;
-static uint32_t zero_cross_timeout_counter = 0;
-static uint8_t tension_nula = 0;
+
+static uint8_t banderaMedicion = 0;
 
 /*buffers*/
 static int16_t sample_buffer[TOTAL_CHANNELS][MAX_SAMPLES];  //se almacenan muestras de un periodo
@@ -231,13 +224,6 @@ int main(void)
   MCP4131_Init(&hpot4, &hspi1, SPI1_CS4_GPIO_Port, SPI1_CS4_Pin);
   MCP4131_Init(&hpot5, &hspi1, SPI1_CS5_GPIO_Port, SPI1_CS5_Pin);
 
-  // Inicializar buffers a cero
-  memset(sample_buffer, 0, sizeof(sample_buffer));
-  memset(rms_buffer, 0, sizeof(rms_buffer));
-  memset(P_buffer, 0, sizeof(P_buffer));
-  memset(rms_prom_buffer, 0, sizeof(rms_prom_buffer));
-  memset(P_prom_buffer, 0, sizeof(P_prom_buffer));
-
 
   int16_t v1 = 0; // Tension fase 1 -> referencia para cruce por cero
   uint8_t cruce_ascendente = 0;
@@ -278,27 +264,6 @@ int main(void)
     }
     else if (en_region_alta && (v1 < -HYST)) {
       en_region_alta = 0;
-    }
-
-    // Si no hay cruce por cero durante un tiempo, forzar inicio de medición
-    if (!muestreo && !cruce_ascendente) {
-      if (++zero_cross_timeout_counter >= ZERO_CROSS_TIMEOUT) {
-        zero_cross_timeout_counter = 0;
-        tension_nula = 1;
-        for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
-          rms_total[ph] = 0.0f;
-          rms_total[ph + TOTAL_PHASES] = 0.0f;
-          P_total[ph] = 0.0f;
-          S[ph] = 0.0f;
-          FP[ph] = 0.0f;
-        }
-        rms_prom_index = 0;
-        calculos_ready = 1;
-        adc_calibrated = 0;
-      }
-    } else if (cruce_ascendente) {
-      zero_cross_timeout_counter = 0;
-      tension_nula = 0;
     }
 
     // === 3. Gestión de inicio / fin de período ===
@@ -391,11 +356,7 @@ int main(void)
 
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
-              if (S[ph] == 0.0f) {
-                FP[ph] = 0.0f;
-              } else {
-                FP[ph] = P_total[ph] / S[ph];
-              }
+              FP[ph] = P_total[ph] / S[ph];
               rms_prom_index = 0;
 
             }
