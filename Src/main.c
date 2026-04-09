@@ -61,12 +61,12 @@ typedef struct {
 #define I2_GAIN               (10.46f / (0.164f * 4095.f))
 #define I3_GAIN               (10.51f / (0.168f * 4095.f))
 */
-#define V1_GAIN 0.08022185119191212188f
-#define V2_GAIN 0.08054880910857070697f
-#define V3_GAIN 0.07951654144835709759f
-#define I1_GAIN 0.01457762941325099933f
-#define I2_GAIN 0.01482773367120644378f
-#define I3_GAIN 0.01485965187518037064f
+const double V1_GAIN = 0.08022185119191212188;
+const double V2_GAIN = 0.08054880910857070697;
+const double V3_GAIN = 0.07951654144835709759;
+const double I1_GAIN = 0.01457762941325099933;
+const double I2_GAIN = 0.01482773367120644378;
+const double I3_GAIN = 0.01485965187518037064;
 
 /* USER CODE END PD */
 
@@ -140,15 +140,15 @@ static int16_t rms_index = -1;
 static int16_t rms_prom_index = -1;
 
 
-static float vdda = 3.3f;
+static double vdda = 3.3;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-static float calculate_rms(int16_t *buffer, uint8_t samples);
-static float adc_to_voltage(float adc_value, uint8_t phase);
-static float adc_to_current(float adc_value, float gain, uint8_t phase);
+static double calculate_rms(int16_t *buffer, uint8_t samples);
+static double adc_to_voltage(double adc_value, uint8_t phase);
+static double adc_to_current(double adc_value, double gain, uint8_t phase);
 void AdjustCurrentGain_Wiper(void);
 //uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
 float calculate_gain(uint8_t wiper_position, uint8_t invertido);
@@ -520,14 +520,14 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
 }
 
 
-static float calculate_rms(int16_t *buffer, uint8_t samples) {
-  if (samples == 0) return 0.0f;
+static double calculate_rms(int16_t *buffer, uint8_t samples) {
+  if (samples == 0) return 0.0;
 
-  float sum = 0.0f;
+  double sum = 0.0;
   for (uint16_t i = 0; i < samples; i++) {
-      sum += buffer[i] * buffer[i];
+      sum += (double)buffer[i] * (double)buffer[i];
   }
-  return (sqrtf((float) sum / samples));
+  return sqrt(sum / (double)samples);
 }
 
 void vdda_calibrated(void) {
@@ -539,41 +539,41 @@ void vdda_calibrated(void) {
 
   uint16_t adc_vrefint = adcData.channels[3];
 
-  vdda = (1.21 * 4095.0f) / adc_vrefint;
+  vdda = (1.21 * 4095.0) / (double)adc_vrefint;
 
   adc_calibrated = 1;
 }
 
-static float adc_to_voltage(float adc_value, uint8_t phase)
+static double adc_to_voltage(double adc_value, uint8_t phase)
 {
   // ECUACION: V = adc_value * (vdda/4095) * (Vi/Vo)
 
   switch(phase){
     case 0:
-      return (float)adc_value * vdda * V1_GAIN;
+      return adc_value * vdda * V1_GAIN;
       break;
     case 1:
-      return (float)adc_value * vdda * V2_GAIN;
+      return adc_value * vdda * V2_GAIN;
       break;
     case 2:
-      return (float)adc_value * vdda * V3_GAIN;
+      return adc_value * vdda * V3_GAIN;
       break;
   }
   // calculo antiguo, funciona bien
   //return ((float)adc_value * vdda * 0.08153905715f);//adc_value*(197.7/0.5842)*(vdda/4095)
 }
 
-static float adc_to_current(float adc_value, float gain, uint8_t phase)
+static double adc_to_current(double adc_value, double gain, uint8_t phase)
 {
   switch(phase){
     case 0:
-      return (float) (adc_value * vdda / gain) * I1_GAIN;
+      return (adc_value * vdda / gain) * I1_GAIN;
       break;
     case 1:
-      return (float) (adc_value * vdda / gain) * I2_GAIN;
+      return (adc_value * vdda / gain) * I2_GAIN;
       break;
     case 2:
-      return (float) (adc_value * vdda / gain) * I3_GAIN;
+      return (adc_value * vdda / gain) * I3_GAIN;
       break;
   }
     //return (float) ((adc_value * vdda * 2000.f) / (gain * 33.f * 4095.f));
