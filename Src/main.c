@@ -21,6 +21,7 @@
 #include "adc.h"
 #include "dma.h"
 #include "spi.h"
+#include "stm32f1xx_hal_gpio.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -48,7 +49,7 @@ typedef struct {
 #define TOTAL_PHASES          3U
 #define MAX_SAMPLES           120  // Cantidad máxima de muestras por periodo
 #define MAX_RMS               128    // Cantidad muestras RMS por canal
-#define MAX_RMS_PROM          10    // Cantidad de valores RMS promediados
+#define MAX_RMS_PROM          3   // Cantidad de valores RMS promediados 10 = 50 segundos
 #define HYST                  40    // Histéresis para cruce (cuentas ADC)
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
@@ -87,7 +88,7 @@ static ADC_MeasurementData_t adcIncData;
 
 char msg[128];
 /* Transmit buffer for RMS message - must persist while DMA transmits */
-static char rms_tx_buf[128];
+static char rms_tx_buf[1024];
 
 /* MCP4131 Digital Potentiometer handles */
 static MCP4131_HandleTypeDef hpot3;  /* CS3 */
@@ -314,21 +315,6 @@ int main(void)
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_active_power(sample_buffer[ph], sample_buffer[ph+TOTAL_PHASES], sample_index);
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_voltage(P_buffer[ph][rms_index - count_cambio_wiper[ph]], ph);
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = adc_to_current(P_buffer[ph][rms_index - count_cambio_wiper[ph]], gain_table[ph], ph);
-
-              int len = 0;
-              for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
-                char rms_str[24];
-                ftoa(rms_str, rms_real[ch], NULL);
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
-                                (unsigned int)ch, rms_str);
-              }
-              if (len < (int)sizeof(rms_tx_buf)) {
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
-              }
-              if (len > 0 && uartReady) {
-                HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
-                uartReady = 0;
-              }
             }        
           }
 
@@ -364,6 +350,35 @@ int main(void)
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
 
+            //ENVIO UART
+            int len = 0;
+              for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
+                char rms_str[24];
+                ftoa(rms_str, rms_total[ch], NULL);
+                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
+                                (unsigned int)ch, rms_str);
+              }
+              for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
+                char P_str[24];
+                ftoa(P_str, P_total[ch], NULL);
+                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "W%u:%s ",
+                                (unsigned int)ch, P_str);
+              }
+              for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
+                char FP_str[24];
+                ftoa(FP_str, FP[ch], NULL);
+                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "FP%u:%s ",
+                                (unsigned int)ch, FP_str);
+              }
+              if (len < (int)sizeof(rms_tx_buf)) {
+                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
+              }
+              if (len > 0 && uartReady) {
+                HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+                uartReady = 0;
+              }
+
           }
         }
       }
@@ -384,7 +399,7 @@ int main(void)
             i_max[ph] = 0;
             i_min[ph] = 0;
           }
-        }else{        //UART FABRI
+        }else{        
           // Actualiza máximos y mínimos de corriente durante el período
           for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++){
             if(sample_buffer[ph+TOTAL_PHASES][sample_index] > i_max[ph]){
@@ -500,6 +515,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART1) {
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
     uartReady = 1;
   }
 }
