@@ -21,7 +21,6 @@
 #include "adc.h"
 #include "dma.h"
 #include "spi.h"
-#include "stm32f1xx_hal_gpio.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -375,7 +374,7 @@ int main(void)
               }
               if (len > 0 && uartReady) {
                 HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
                 uartReady = 0;
               }
 
@@ -515,7 +514,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART1) {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
     uartReady = 1;
   }
 }
@@ -661,6 +660,8 @@ float calculate_gain(uint8_t wiper_position, uint8_t invertido){
     return (float) wiper_position/(128.f - wiper_position);
   }
 }
+
+
 
 
 static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples){
