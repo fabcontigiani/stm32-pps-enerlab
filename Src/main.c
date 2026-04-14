@@ -53,6 +53,7 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
+#define ZERO_CROSS_TIMEOUT    50U // cantidad de segundos sin detectar cruce por cero para resetear cálculos
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -141,6 +142,9 @@ static int16_t rms_prom_index = -1;
 
 
 static double vdda = 3.3;
+
+static uint16_t timer_count = 0;    //cuenta la cantidad de veces que realiza una muestra
+static uint16_t overflow_count = 0; //cantidad de segundos sin detectar cruce por cero
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -341,43 +345,18 @@ int main(void)
 
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
-              FP[ph] = P_total[ph] / S[ph];
+              if (S[ph] == 0.0f) {
+                FP[ph] = 0.0f;
+              } else {
+                FP[ph] = P_total[ph] / S[ph];
+              }
+
               rms_prom_index = 0;
 
             }
             //rms_prom_index = 0;
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
-
-            //ENVIO UART
-            int len = 0;
-              for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
-                char rms_str[24];
-                ftoa(rms_str, rms_total[ch], NULL);
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
-                                (unsigned int)ch, rms_str);
-              }
-              for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
-                char P_str[24];
-                ftoa(P_str, P_total[ch], NULL);
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "W%u:%s ",
-                                (unsigned int)ch, P_str);
-              }
-              for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
-                char FP_str[24];
-                ftoa(FP_str, FP[ch], NULL);
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "FP%u:%s ",
-                                (unsigned int)ch, FP_str);
-              }
-              if (len < (int)sizeof(rms_tx_buf)) {
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
-              }
-              if (len > 0 && uartReady) {
-                HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-                uartReady = 0;
-              }
-
           }
         }
       }
@@ -417,6 +396,62 @@ int main(void)
         sample_index = 0;
       }
     }
+
+    //GESTION TIMEOUT para enviar dato nulo cuando no hay cruce por cero
+    if (!muestreo && !cruce_ascendente) {
+          if (overflow_count >= ZERO_CROSS_TIMEOUT) {
+            overflow_count = 0;
+           
+            for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
+              rms_total[ph] = 0.0f;
+              rms_total[ph + TOTAL_PHASES] = 0.0f;
+              P_total[ph] = 0.0f;
+              S[ph] = 0.0f;
+              FP[ph] = 0.0f;
+            }
+            rms_index = 0;
+            rms_prom_index = 0;
+            calculos_ready = 1;
+            adc_calibrated = 0;
+          }
+        } else if (cruce_ascendente) {
+          overflow_count = 0;
+        }
+
+    //ENVIO UART
+    if(calculos_ready){
+      calculos_ready = 0;
+
+      int len = 0;
+
+      for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
+        char rms_str[24];
+        ftoa(rms_str, rms_total[ch], NULL);
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
+                        (unsigned int)ch, rms_str);
+      }
+      for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
+        char P_str[24];
+        ftoa(P_str, P_total[ch], NULL);
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "W%u:%s ",
+                        (unsigned int)ch, P_str);
+      }
+      for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
+        char FP_str[24];
+        ftoa(FP_str, FP[ch], NULL);
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "FP%u:%s ",
+                        (unsigned int)ch, FP_str);
+      }
+      if (len < (int)sizeof(rms_tx_buf)) {
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
+      }
+      if (len > 0 && uartReady) {
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+        uartReady = 0;
+      }
+    }
+
 
   
 
@@ -481,6 +516,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
   if (hadc->Instance != ADC1) {
     return;
   }
+  //ADC calibrado en funcion de TIMER3 a 5 kHz
 
   /* Unpack DMA multimode buffer into adcData struct (8 channels)
    * lower 16 bits = ADC1 sample -> channels[0..PER_ADC_CHANNEL_COUNT-1]
@@ -491,25 +527,14 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     adcIncData.channels[i] = (uint16_t)(packed & 0xFFFF);
     adcIncData.channels[i + PER_ADC_CHANNEL_COUNT] = (uint16_t)((packed >> 16) & 0xFFFF);
   }
+  
+  //conteo de 1 segundo 
+  if(++timer_count > 5000){
+    timer_count = 0;
+    overflow_count++;
+  }
 
-/*
-  // Prepare a single message with all 6 channels taken from adcData
-  int len = 0;
-  for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(msg); ++ch) {
-    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
-                    (unsigned int)ch, (unsigned int)adcIncData.channels[ch]);
-  }
-  if (len < (int)sizeof(msg)) {
-    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "\r\n");
-  }
-  if (len > 0 && uartReady) {
-    HAL_UART_Transmit_DMA(&huart1, (uint8_t *)msg, (uint16_t)len);
-    uartReady = 0;
-  }
-*/
-
-  /* Signal main loop that new ADC data is ready */
-  flag_adc_ready = 1;
+  flag_adc_ready = 1; //Signal main loop that new ADC data is ready
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
