@@ -302,13 +302,6 @@ int main(void)
 
               rms_real[ph] = adc_to_voltage(rms_buffer[ph][rms_index - count_cambio_wiper[ph]], ph);
               rms_real[ph+TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
-              /*
-              if(ph == 1){
-                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
-              }else{
-                rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
-              }
-              */
 
               rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][rms_index - count_cambio_wiper[ph]],gain_table[ph], ph);
               P_buffer[ph][rms_index - count_cambio_wiper[ph]] = calculate_active_power(sample_buffer[ph], sample_buffer[ph+TOTAL_PHASES], sample_index);
@@ -331,10 +324,11 @@ int main(void)
           }
 
           if(rms_prom_index == MAX_RMS_PROM - 1){
+            rms_prom_index = 0;
+
             for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
               rms_total[ph] = calculate_mean(rms_prom_buffer[ph], MAX_RMS_PROM);
               rms_total[ph + TOTAL_PHASES] = calculate_mean(rms_prom_buffer[ph + TOTAL_PHASES], MAX_RMS_PROM);
-
               rms_total[ph] = adc_to_voltage(rms_total[ph], ph);
               
               P_total[ph] = calculate_mean(P_prom_buffer[ph], MAX_RMS_PROM);
@@ -342,10 +336,8 @@ int main(void)
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
               FP[ph] = P_total[ph] / S[ph];
-              rms_prom_index = 0;
-
+              FP[ph] = acosf(FP[ph]) * (180.0f / M_PI);
             }
-            //rms_prom_index = 0;
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
 
