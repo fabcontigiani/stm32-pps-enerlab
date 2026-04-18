@@ -53,6 +53,8 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
+// ADC sample rate used to convert ADC ticks to seconds
+#define ADC_SAMPLE_RATE_HZ    5000U
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -102,8 +104,7 @@ static uint8_t en_region_alta = 0;
 static uint8_t muestreo = 0;
 static uint8_t primer_periodo = 1;
 static uint8_t calculos_ready = 0;
-
-static uint8_t banderaMedicion = 0;
+static uint8_t cruce_ascendente = 0;
 
 /*buffers*/
 static int16_t sample_buffer[TOTAL_CHANNELS][MAX_SAMPLES];  //se almacenan muestras de un periodo
@@ -139,8 +140,17 @@ static uint8_t sample_index = 0;
 static int16_t rms_index = -1;
 static int16_t rms_prom_index = -1;
 
+static uint16_t timeout = 0;
+static uint16_t timer_cont = 0;
+/* ADC tick counter used to measure elapsed time between UART messages.
+  Incremented from HAL_ADC_ConvCpltCallback. */
+static volatile uint32_t adc_tick_count = 0;
+/* Last ADC tick captured when a UART message was transmitted */
+static uint32_t last_tx_adc_tick = 0;
 
 static double vdda = 3.3;
+static int16_t v1 = 0; // Tension fase 1 -> referencia para cruce por cero
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -225,8 +235,11 @@ int main(void)
   MCP4131_Init(&hpot5, &hspi1, SPI1_CS5_GPIO_Port, SPI1_CS5_Pin);
 
 
-  int16_t v1 = 0; // Tension fase 1 -> referencia para cruce por cero
-  uint8_t cruce_ascendente = 0;
+  v1 = 0; // Tension fase 1 -> referencia para cruce por cero
+  cruce_ascendente = 0;
+
+
+
 
   /* USER CODE END 2 */
 
@@ -234,6 +247,18 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* Timeout de cruce por cero para evitar quedarse esperando si la TENSION se pierde o es nula
+    muestreo a 5kHz (ts = 0,02ms) 
+    eligiendo un timeout de T = 25ms 
+    numero de muestras: n = T/ts = 125
+    */
+    if(timer_cont > 125){
+      timeout = 1;
+      flag_adc_ready = 1; // fuerza a esperar nueva muestra de ADC para iniciar nuevo periodo
+      adc_calibrated = 1;
+    }
+
+
     // Calibra Vdda y termina el ciclo
     if(!adc_calibrated && flag_adc_ready) {
       vdda_calibrated();
@@ -255,12 +280,20 @@ int main(void)
     // === 1. Leer muestra ADC (referencia para inicio de periodo) ===
     v1 = adcData.channels[0] - adcData.channels[7];
 
-    // === 2. Detección de cruce por cero con histéresis ===
-    cruce_ascendente = 0;
+    cruce_ascendente = 0; //flag de cruce por cero ascendente de un periodo de tension
 
+    if(timeout){
+      timeout = 0;
+      en_region_alta = 0;
+      v1 = HYST + 4; // fuerza cruce por cero para iniciar nuevo periodo
+      muestreo = 1;
+    }
+
+    // === 2. Detección de cruce por cero con histéresis ===
     if (!en_region_alta && (v1 > HYST)) {
       en_region_alta = 1;
       cruce_ascendente = 1;
+      timer_cont = 0; // reset del timer para timeout de cruce por cero
     }
     else if (en_region_alta && (v1 < -HYST)) {
       en_region_alta = 0;
@@ -336,40 +369,10 @@ int main(void)
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
               FP[ph] = P_total[ph] / S[ph];
-              FP[ph] = acosf(FP[ph]) * (180.0f / M_PI);
+              FP[ph] = acosf(FP[ph]) * (180.0f / M_PI); // Angulo PHI en grados
             }
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
-
-            //ENVIO UART
-            int len = 0;
-              for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
-                char rms_str[24];
-                ftoa(rms_str, rms_total[ch], NULL);
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
-                                (unsigned int)ch, rms_str);
-              }
-              for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
-                char P_str[24];
-                ftoa(P_str, P_total[ch], NULL);
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "W%u:%s ",
-                                (unsigned int)ch, P_str);
-              }
-              for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
-                char FP_str[24];
-                ftoa(FP_str, FP[ch], NULL);
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "FP%u:%s ",
-                                (unsigned int)ch, FP_str);
-              }
-              if (len < (int)sizeof(rms_tx_buf)) {
-                len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "\r\n");
-              }
-              if (len > 0 && uartReady) {
-                HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-                uartReady = 0;
-              }
-
           }
         }
       }
@@ -400,8 +403,8 @@ int main(void)
             }
           }
         }
-        // Avanza al siguiente sample del período
-        sample_index++;
+        
+        sample_index++; // Avanza al siguiente sample del período
       }
       else {
         // seguridad: overflow del buffer
@@ -410,10 +413,87 @@ int main(void)
       }
     }
 
-  
+    /*
+    if(timeout){
+      timeout = 0;
+
+      for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
+        rms_total[ph] = 0.0f;
+        rms_total[ph + TOTAL_PHASES] = 0.0f;
+        
+        P_total[ph] = 0.0f;
+
+        S[ph] = 0.0f;
+
+        FP[ph] = 0.0f;;
+        FP[ph] = acosf(FP[ph]) * (180.0f / M_PI); // Angulo PHI en grados
+      }
+      calculos_ready = 1; // listo para enviar por UART
+      adc_calibrated = 0; // 0 para volver a calibrar Vdda
+    }
+    */
 
 
 
+
+
+
+
+    // === 5. Envío por UART ===
+    if(calculos_ready){
+      calculos_ready = 0;
+
+      int len = 0;
+      for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
+        char rms_str[24];
+        ftoa(rms_str, rms_total[ch], NULL);
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
+                        (unsigned int)ch, rms_str);
+      }
+      for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
+        char P_str[24];
+        ftoa(P_str, P_total[ch], NULL);
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "W%u:%s ",
+                        (unsigned int)ch, P_str);
+      }
+      for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
+        char FP_str[24];
+        ftoa(FP_str, FP[ch], NULL);
+        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "FP%u:%s ",
+                        (unsigned int)ch, FP_str);
+      }
+      /* If UART is ready, compute elapsed time (using ADC ticks), append it
+         and start DMA transmit. We update last_tx_adc_tick only when a
+         transmission actually begins. */
+      if (len > 0 && uartReady) {
+        uint32_t ticks;
+        __disable_irq();
+        ticks = adc_tick_count - last_tx_adc_tick;
+        last_tx_adc_tick = adc_tick_count;
+        __enable_irq();
+
+        double elapsed_s = (double)ticks / (double)ADC_SAMPLE_RATE_HZ;
+        char time_str[24];
+        ftoa(time_str, elapsed_s, NULL);
+
+        if (len < (int)sizeof(rms_tx_buf)) {
+          len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "DT:%s s\r\n", time_str);
+        }
+
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+        uartReady = 0;
+      }
+    }
+
+    /*
+    //Mensaje de encendido
+    static const char mensaje_enc[] = "Encendiendo Dispositivo\r\n";
+    if (uartReady) {
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)mensaje_enc, (uint16_t)(sizeof(mensaje_enc) - 1));
+        uartReady = 0;
+    }
+    */
 
     /* USER CODE END WHILE */
 
@@ -500,9 +580,14 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
   }
 */
 
+  timer_cont++;
+  /* ADC tick for time measurement */
+  adc_tick_count++;
+
   /* Signal main loop that new ADC data is ready */
   flag_adc_ready = 1;
 }
+
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART1) {
@@ -510,6 +595,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     uartReady = 1;
   }
 }
+
 
 
 
@@ -541,7 +627,7 @@ void vdda_calibrated(void) {
   ADC_MeasurementData_t adcData;
   __disable_irq();
   adcData = adcIncData;
-  flag_adc_ready = 0;
+  //flag_adc_ready = 0;
   __enable_irq();
 
   uint16_t adc_vrefint = adcData.channels[3];
@@ -594,12 +680,14 @@ void AdjustCurrentGain_Wiper(void){
     if(i_max[phase] > I_MAX || i_min[phase] < -I_MAX){
       cambio_wiper[phase] = 1;
       wiper[phase]--;
+
       if(wiper[phase] < 0){
         wiper[phase] = 0;
       }
     }else if(i_max[phase] < I_MIN && i_min[phase] > -I_MIN){
       cambio_wiper[phase] = 1;
       wiper[phase]++;
+
       if(wiper[phase] > 6){
         wiper[phase] = 6;
         cambio_wiper[phase] = 0;
@@ -639,12 +727,6 @@ void AdjustCurrentGain_Wiper(void){
   }
 }
 
-/*
-uint8_t reverse_vector(const uint8_t *vector, uint8_t index){
-  return (vector[TOTAL_GAIN_CURRENT- 1 - index]);
-}
-*/
-
 float calculate_gain(uint8_t wiper_position, uint8_t invertido){
   if(invertido){
     return (float) (128.f - wiper_position)/wiper_position;
@@ -652,9 +734,6 @@ float calculate_gain(uint8_t wiper_position, uint8_t invertido){
     return (float) wiper_position/(128.f - wiper_position);
   }
 }
-
-
-
 
 static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples){
   if (samples == 0) return 0.0f;
