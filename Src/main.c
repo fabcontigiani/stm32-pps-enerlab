@@ -151,6 +151,7 @@ static uint32_t last_tx_adc_tick = 0;
 static double vdda = 3.3;
 static int16_t v1 = 0; // Tension fase 1 -> referencia para cruce por cero
 
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -238,9 +239,6 @@ int main(void)
   v1 = 0; // Tension fase 1 -> referencia para cruce por cero
   cruce_ascendente = 0;
 
-
-
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -287,6 +285,7 @@ int main(void)
       en_region_alta = 0;
       v1 = HYST + 4; // fuerza cruce por cero para iniciar nuevo periodo
       muestreo = 1;
+      sample_index = 0;
     }
 
     // === 2. Detección de cruce por cero con histéresis ===
@@ -345,7 +344,7 @@ int main(void)
 
           if(rms_index == MAX_RMS - 1){
             rms_prom_index = (rms_prom_index + 1) % MAX_RMS_PROM;
-            
+
             for(uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
               rms_prom_buffer[ph][rms_prom_index] = calculate_mean(rms_buffer[ph], 1 + rms_index - count_cambio_wiper[ph]);
               rms_prom_buffer[ph + TOTAL_PHASES][rms_prom_index] = calculate_mean(rms_buffer[ph + TOTAL_PHASES], 1 + rms_index - count_cambio_wiper[ph + TOTAL_PHASES]);
@@ -357,7 +356,7 @@ int main(void)
           }
 
           if(rms_prom_index == MAX_RMS_PROM - 1){
-            rms_prom_index = 0;
+            rms_prom_index = -1;
 
             for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
               rms_total[ph] = calculate_mean(rms_prom_buffer[ph], MAX_RMS_PROM);
@@ -412,33 +411,7 @@ int main(void)
         sample_index = 0;
       }
     }
-
-    /*
-    if(timeout){
-      timeout = 0;
-
-      for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
-        rms_total[ph] = 0.0f;
-        rms_total[ph + TOTAL_PHASES] = 0.0f;
-        
-        P_total[ph] = 0.0f;
-
-        S[ph] = 0.0f;
-
-        FP[ph] = 0.0f;;
-        FP[ph] = acosf(FP[ph]) * (180.0f / M_PI); // Angulo PHI en grados
-      }
-      calculos_ready = 1; // listo para enviar por UART
-      adc_calibrated = 0; // 0 para volver a calibrar Vdda
-    }
-    */
-
-
-
-
-
-
-
+  
     // === 5. Envío por UART ===
     if(calculos_ready){
       calculos_ready = 0;
