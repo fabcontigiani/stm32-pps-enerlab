@@ -31,7 +31,6 @@
 #include <stdio.h>
 #include <math.h>
 #include "mcp4131.c"
-#include "ftoa.c"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,8 +52,6 @@ typedef struct {
 #define I_MAX                 1638  // 80% = 0.8 * 4095 / 2
 #define I_MIN                 512 // 25% = 0.25 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
-// ADC sample rate used to convert ADC ticks to seconds
-#define ADC_SAMPLE_RATE_HZ    5000U
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -142,11 +139,6 @@ static int16_t rms_prom_index = -1;
 
 static uint16_t timeout = 0;
 static uint16_t timer_cont = 0;
-/* ADC tick counter used to measure elapsed time between UART messages.
-  Incremented from HAL_ADC_ConvCpltCallback. */
-static volatile uint32_t adc_tick_count = 0;
-/* Last ADC tick captured when a UART message was transmitted */
-static uint32_t last_tx_adc_tick = 0;
 
 static double vdda = 3.3;
 static int16_t v1 = 0; // Tension fase 1 -> referencia para cruce por cero
@@ -443,43 +435,17 @@ int main(void)
     if(calculos_ready){
       calculos_ready = 0;
 
-      int len = 0;
-      for (uint32_t ch = 0; ch < (TOTAL_CHANNELS) && len < (int)sizeof(rms_tx_buf); ++ch) {
-        char rms_str[24];
-        ftoa(rms_str, rms_total[ch], NULL);
-        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "RMS%u:%s ",
-                        (unsigned int)ch, rms_str);
-      }
-      for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
-        char P_str[24];
-        ftoa(P_str, P_total[ch], NULL);
-        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "W%u:%s ",
-                        (unsigned int)ch, P_str);
-      }
-      for (uint32_t ch = 0; ch < (TOTAL_PHASES) && len < (int)sizeof(rms_tx_buf); ++ch) {
-        char FP_str[24];
-        ftoa(FP_str, FP[ch], NULL);
-        len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "FP%u:%s ",
-                        (unsigned int)ch, FP_str);
-      }
-      /* If UART is ready, compute elapsed time (using ADC ticks), append it
-         and start DMA transmit. We update last_tx_adc_tick only when a
-         transmission actually begins. */
-      if (len > 0 && uartReady) {
-        uint32_t ticks;
-        __disable_irq();
-        ticks = adc_tick_count - last_tx_adc_tick;
-        last_tx_adc_tick = adc_tick_count;
-        __enable_irq();
+      int len = snprintf(
+        rms_tx_buf,
+        sizeof(rms_tx_buf),
+        "{\"version\":\"1.0.0\",\"rms\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],\"p\":[%.3f,%.3f,%.3f],\"fp\":[%.3f,%.3f,%.3f]}\r\n",
+        rms_total[0], rms_total[1], rms_total[2],
+        rms_total[3], rms_total[4], rms_total[5],
+        P_total[0], P_total[1], P_total[2],
+        FP[0], FP[1], FP[2]
+      );
 
-        double elapsed_s = (double)ticks / (double)ADC_SAMPLE_RATE_HZ;
-        char time_str[24];
-        ftoa(time_str, elapsed_s, NULL);
-
-        if (len < (int)sizeof(rms_tx_buf)) {
-          len += snprintf(rms_tx_buf + len, sizeof(rms_tx_buf) - (size_t)len, "DT:%s s\r\n", time_str);
-        }
-
+      if (len > 0 && len < (int)sizeof(rms_tx_buf) && uartReady) {
         HAL_UART_Transmit_DMA(&huart1, (uint8_t *)rms_tx_buf, (uint16_t)len);
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
         uartReady = 0;
@@ -581,8 +547,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 */
 
   timer_cont++;
-  /* ADC tick for time measurement */
-  adc_tick_count++;
 
   /* Signal main loop that new ADC data is ready */
   flag_adc_ready = 1;
