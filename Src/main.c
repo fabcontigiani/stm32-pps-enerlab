@@ -412,7 +412,8 @@ int main(void)
       int len = snprintf(
         rms_tx_buf,
         sizeof(rms_tx_buf),
-        "{\"version\":\"FIRMWARE_VERSION\",\"rms\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],\"p\":[%.3f,%.3f,%.3f],\"fp\":[%.3f,%.3f,%.3f]}\r\n",
+        "{\"version\":\"%s\",\"rms\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],\"p\":[%.3f,%.3f,%.3f],\"fp\":[%.3f,%.3f,%.3f]}\r\n",
+        FIRMWARE_VERSION,
         rms_total[0], rms_total[1], rms_total[2],
         rms_total[3], rms_total[4], rms_total[5],
         P_total[0], P_total[1], P_total[2],
