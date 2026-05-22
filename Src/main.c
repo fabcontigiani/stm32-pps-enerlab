@@ -674,8 +674,8 @@ void AdjustCurrentGain_Wiper(void){
       switch(phase){
         case 1:
           if (MCP4131_IsReady(&hpot3)) {
-            MCP4131_WriteWiper_DMA(&hpot3,wiper_position_reverse[wiper[phase]]);
-            gain_table[phase] = calculate_gain(wiper_position_reverse[wiper[phase]], 1);
+            MCP4131_WriteWiper_DMA(&hpot3,wiper_position[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
           }
           break;
         case 2:
@@ -686,8 +686,8 @@ void AdjustCurrentGain_Wiper(void){
           break;
         case 0:
           if (MCP4131_IsReady(&hpot5)) {
-            MCP4131_WriteWiper_DMA(&hpot5,wiper_position_reverse[wiper[phase]]);
-            gain_table[phase] = calculate_gain(wiper_position_reverse[wiper[phase]], 1);
+            MCP4131_WriteWiper_DMA(&hpot5,wiper_position[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
           }
           break;
       }
