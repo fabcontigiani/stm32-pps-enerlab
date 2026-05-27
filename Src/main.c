@@ -48,13 +48,13 @@ typedef struct {
 #define TOTAL_PHASES          3U
 #define MAX_SAMPLES           120  // Cantidad máxima de muestras por periodo
 #define MAX_RMS               128    // Cantidad muestras RMS por canal
-#define MAX_RMS_PROM          3   // Cantidad de valores RMS promediados 10 = 50 segundos
+#define MAX_RMS_PROM          1   // Cantidad de valores RMS promediados 10 = 50 segundos
 #define HYST                  40    // Histéresis para cruce (cuentas ADC)
 #define I_MAX                 1843  // 90% = 0.9 * 4095 / 2
 #define I_MIN                 512 // 10% = 0.1 * 4095 / 2 
 #define TOTAL_GAIN_CURRENT    7U
 #define TIMEOUT_MAX           500U
-#define PER_NO_SIGNAL         5U    // cantidad de periodos sin señal para resetear wiper a ganancia mínima
+#define PER_NO_SIGNAL         1U    // cantidad de periodos sin señal para resetear wiper a ganancia mínima
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -138,7 +138,7 @@ static float gain_table[TOTAL_PHASES] = {1, 1, 1};
 static uint8_t count_noSignal[TOTAL_PHASES] = {0, 0, 0}; // contador de periodos sin señal para cada fase
 
 
-static const uint8_t valid_channels[TOTAL_CHANNELS] = {0,1,2,6,4,5};
+static const uint8_t valid_channels[TOTAL_CHANNELS] = {0,1,2,4,5,6};
 
 /*indices*/
 static uint8_t sample_index = 0;
@@ -644,32 +644,40 @@ void AdjustCurrentGain_Wiper(void){
 
     // Condicionales para detectar si se debe cambiar el wiper
     if(i_max[phase] > I_MAX || i_min[phase] < -I_MAX){
+      // Señal demasiado alta -> reducir ganancia (evitar saturación)
       cambio_wiper[phase] = 1;
-      wiper[phase]--;
-
-      if(wiper[phase] < 0){
+      if (wiper[phase] > 0) {
+        wiper[phase]--;
+      } else {
         wiper[phase] = 0;
         cambio_wiper[phase] = 0;
       }
-    }else if(i_max[phase] < I_MIN && i_min[phase] > -I_MIN){
-      cambio_wiper[phase] = 1;
-      wiper[phase]++;
-
-      if(wiper[phase] > TOTAL_GAIN_CURRENT - 1){
-        wiper[phase] = TOTAL_GAIN_CURRENT - 1;
-        cambio_wiper[phase] = 0;
-        count_noSignal[phase]++; // contador de periodos sin señal
-        if(count_noSignal[phase] > PER_NO_SIGNAL){ // si no hay señal por más de PER_NO_SIGNAL periodos, resetea al wiper para NO amplificar ruido
-          wiper[phase] = 0; //ganancia OPAMP x1
-          count_noSignal[phase] = 0;
+      // Reiniciar contador de ausencia de señal si había
+      count_noSignal[phase] = 0;
+    } else if (i_max[phase] < I_MIN && i_min[phase] > -I_MIN) {
+      // Señal muy baja -> posible ausencia de señal. NO aumentar ganancia (evita amplificar ruido)
+      count_noSignal[phase]++;
+      if (count_noSignal[phase] >= PER_NO_SIGNAL) {
+        if (wiper[phase] != 0) {
+          cambio_wiper[phase] = 1;
+          wiper[phase] = 0; // forzar ganancia mínima (OPAMP x1)
+        } else {
+          cambio_wiper[phase] = 0;
         }
+        count_noSignal[phase] = 0;
+      } else {
+        // No aplicamos cambio de wiper hasta confirmar ausencia de señal durante PER_NO_SIGNAL periodos
+        cambio_wiper[phase] = 0;
       }
+    } else {
+      // Señal dentro de rango normal -> reset contador
+      count_noSignal[phase] = 0;
     }
     
     // Comunicacion con Pote Digital
     if(cambio_wiper[phase]){
       // establecer contador de muestras a ignorar tras cambio de wiper
-      count_cambio_wiper[phase] = 1;
+        count_cambio_wiper[phase] = 1; // ignorar 1 periodo tras cambio de wiper
       
       switch(phase){
         case 1:
