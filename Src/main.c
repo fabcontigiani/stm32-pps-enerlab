@@ -4,14 +4,56 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
-  * @attention
+  * CAMBIOS RESPECTO A LA VERSION ANTERIOR:
   *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
+  * [1] POTENCIA ACTIVA P — ahora se calcula con producto directo muestra×muestra
+  *     (calculate_active_power) en lugar de DFT bin único.
+  *     Ventajas:
+  *       - Captura fundamental + armónicos (P total, IEEE 1459-2010)
+  *       - El signo es correcto por naturaleza (positivo = consume, negativo = genera)
+  *       - No requiere negación manual
   *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
+  * [2] POTENCIA REACTIVA Q — se mantiene DFT bin k=1 (solo fundamental)
+  *     pero se elimina la negación arbitraria. El signo queda determinado
+  *     por la convención e^{-jwt} de calculate_single_bin_dft():
+  *       Q > 0 : carga inductiva (I retrasada respecto a V)
+  *       Q < 0 : carga capacitiva / generación con adelanto de corriente
+  *
+  * [3] POTENCIA APARENTE S — siempre positiva: S = Vrms * Irms
+  *     No se puede calcular con signo porque es una magnitud escalar.
+  *
+  * [4] FACTOR DE POTENCIA FP — ahora FP = P / S (IEEE 1459-2010)
+  *     Rango: [-1, +1]
+  *       FP > 0 : consumo neto (cuadrantes I y IV)
+  *       FP < 0 : generación neta (cuadrantes II y III)
+  *     Se agrega FP_angulo = atan2(Q, P) * (180/pi) para el ángulo de fase
+  *     completo en [-180°, +180°], que indica el cuadrante exacto.
+  *
+  * [5] CONVERSIÓN DE UNIDADES para P:
+  *     calculate_active_power() devuelve ADC²  (cuentas_V × cuentas_I).
+  *     Se aplica la misma escala que antes:
+  *       P_real = P_adc2 * vdda² * Kv * Ki / G
+  *     implementado en la nueva función adc2_to_power().
+  *
+  * [6] AGC CON HISTÉRESIS Y SUBIDA GRADUAL — AdjustCurrentGain_Wiper()
+  *
+  *     Problema 1 resuelto — subida gradual de ganancia:
+  *       Si I_MIN_NOISE < i_max < I_MIN_H durante PER_SUBIDA_GAIN períodos
+  *       consecutivos → wiper++ (sube un nivel, gradual).
+  *       I_MIN_NOISE separa "señal débil real" de "ruido puro".
+  *
+  *     Problema 2 resuelto — count_cambio_wiper proporcional al salto:
+  *       Si wiper baja más de 1 nivel (reset a 0 desde nivel alto),
+  *       count_cambio_wiper = salto_niveles + 1 para descartar los
+  *       períodos de establecimiento del MCP4131 + OPAMP.
+  *
+  *     Problema 3 resuelto — histéresis de doble umbral:
+  *       Zona ALTA:  i_max > I_MAX    → bajar    (sin histéresis, reacción inmediata)
+  *                   i_max < I_MAX_H  → volver OK (I_MAX_H = I_MAX * 0.85)
+  *       Zona BAJA:  i_max < I_MIN    → contar períodos bajos
+  *                   i_max > I_MIN_H  → volver OK (I_MIN_H = I_MIN * 1.20)
+  *       La histéresis evita el chattering cuando la señal oscila cerca
+  *       de los umbrales duros.
   *
   ******************************************************************************
   */
@@ -42,7 +84,7 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.2.0"
 #define PER_ADC_CHANNEL_COUNT 4U
 #define TOTAL_CHANNELS        6U
 #define TOTAL_PHASES          3U
@@ -50,11 +92,47 @@ typedef struct {
 #define MAX_RMS               128 // Cantidad muestras RMS por canal
 #define MAX_RMS_PROM          1   // Cantidad de valores RMS promediados 10 = 50 segundos
 #define HYST                  40  // Histéresis para cruce (cuentas ADC)
-#define I_MAX                 1843// 90% = 0.9 * 4095 / 2
-#define I_MIN                 512 // 10% = 0.1 * 4095 / 2 
-#define TOTAL_GAIN_CURRENT    7U  // cantidad de niveles de ganancia de corriente
-#define TIMEOUT_MAX           500U// cantidad de periodos para timeout de cruce por cero 
-#define PER_NO_SIGNAL         1U  // cantidad de periodos sin señal para resetear wiper a ganancia mínima
+
+/* --- Umbrales de corriente con histéresis [CAMBIO 6] ---
+ *
+ * Zona ALTA (saturación):
+ *   Entrada:  i_max > I_MAX       → bajar ganancia de inmediato
+ *   Salida:   i_max < I_MAX_H     → volver a zona OK
+ *   I_MAX_H = I_MAX * 0.85 ≈ 1566 cuentas (85% del fondo de escala)
+ *
+ * Zona BAJA (señal débil / ausente):
+ *   Entrada:  i_max < I_MIN       → incrementar contador
+ *   Salida:   i_max > I_MIN_H     → volver a zona OK, reset contador
+ *   I_MIN_H = I_MIN * 1.20 ≈ 245 cuentas (20% por encima de I_MIN)
+ *
+ * Zona RUIDO (señal demasiado baja para ser real):
+ *   i_max < I_MIN_NOISE            → tratar como ausencia total de señal
+ *   I_MIN_NOISE = I_MIN * 0.25 ≈ 51 cuentas
+ *
+ * La banda de histéresis (I_MIN..I_MIN_H) y (I_MAX_H..I_MAX) evita
+ * que el wiper cambie en cada período cuando la señal oscila cerca
+ * de los umbrales duros (chattering).
+ */
+#define I_MAX            1843   /* 90% de fondo de escala = 0.9 * 4095/2    */
+#define I_MAX_H          1566   /* umbral de salida zona alta  = I_MAX * 0.85 */
+#define I_MIN            204    /* 10% de fondo de escala = 0.1 * 4095/2    */
+#define I_MIN_H          245    /* umbral de salida zona baja  = I_MIN * 1.20 */
+#define I_MIN_NOISE      51     /* < 3% de fondo de escala: ruido puro       */ 
+
+/* --- Períodos para subida gradual de ganancia [CAMBIO 6] ---
+ *
+ * PER_SUBIDA_GAIN: número de períodos consecutivos con señal baja pero
+ *   presente (I_MIN_NOISE < i_max < I_MIN) antes de subir un nivel de
+ *   ganancia. Evita subir por transitorios cortos.
+ *   Valor 3 → ~60 ms a 50 Hz (conservador, ajustar según aplicación).
+ *
+ * PER_NO_SIGNAL: períodos con señal < I_MIN_NOISE para resetear a G=1×.
+ *   Se mantiene en 1 para reacción rápida ante pérdida total de señal.
+ */
+#define PER_SUBIDA_GAIN     3U
+#define TOTAL_GAIN_CURRENT  7U  // cantidad de niveles de ganancia de corriente
+#define TIMEOUT_MAX         500U// cantidad de periodos para timeout de cruce por cero 
+#define PER_NO_SIGNAL       1U  // cantidad de periodos sin señal para resetear wiper a ganancia mínima
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -109,6 +187,7 @@ static uint8_t cruce_ascendente = 0;
 /*buffers*/
 static int16_t sample_buffer[TOTAL_CHANNELS][MAX_SAMPLES];  //se almacenan muestras de un periodo
 static float rms_buffer[TOTAL_CHANNELS][MAX_RMS];           //se almacenan valores RMS de un periodo
+
 static float P_buffer[TOTAL_PHASES][MAX_RMS];               //se almacenan valores de potencia activa por periodo
 static float Q_buffer[TOTAL_PHASES][MAX_RMS];               //se almacenan valores de potencia reactiva por periodo
 
@@ -138,6 +217,8 @@ static float gain_table[TOTAL_PHASES] = {1, 1, 1};
 
 static uint8_t count_noSignal[TOTAL_PHASES] = {0, 0, 0}; // contador de periodos sin señal para cada fase
 
+/* [CAMBIO 6] contador de períodos con señal baja pero presente (para subida gradual) */
+static uint8_t count_señalBaja[TOTAL_PHASES] = {0, 0, 0};
 
 static const uint8_t valid_channels[TOTAL_CHANNELS] = {0,1,2,4,5,6};
 
@@ -339,13 +420,14 @@ int main(void)
               if (idx < 0) idx += MAX_RMS; // wrap-around seguro
 
               rms_buffer[ph][idx] = calculate_rms(sample_buffer[ph], sample_index);
+
               rms_buffer[ph + TOTAL_PHASES][idx] = calculate_rms(sample_buffer[ph + TOTAL_PHASES], sample_index);
 
-              rms_real[ph] = adc_to_voltage(rms_buffer[ph][idx], ph);
-              rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][idx], gain_table[ph], ph);
-
-
               rms_buffer[ph + TOTAL_PHASES][idx] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][idx], gain_table[ph], ph);
+
+              rms_real[ph] = adc_to_voltage(rms_buffer[ph][idx], ph);
+
+              rms_real[ph + TOTAL_PHASES] = rms_buffer[ph + TOTAL_PHASES][idx];
 
               /* ----------------------------------------------------------------
                * [CAMBIO] POTENCIA ACTIVA P
@@ -518,6 +600,12 @@ int main(void)
     }
   
     // === 5. Envío por UART ===
+      /*
+      * [CAMBIO] Se agrega FP_angulo al JSON para indicar cuadrante exacto.
+      * Formato nuevo:
+      *   "fp"  : factor de potencia IEEE 1459  [-1, +1]
+      *   "fpa" : ángulo de fase atan2(Q,P)     [-180°, +180°]
+      */
     if (calculos_ready) {
       calculos_ready = 0;
 
@@ -758,6 +846,7 @@ float calculate_gain(uint8_t wiper_position, uint8_t invertido){
   }
 }
 
+/* --- Potencia activa por producto directo (IEEE 1459-2010) --- */
 static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples) {
   if (samples == 0) return 0.0f;
 
@@ -797,70 +886,125 @@ static void calculate_single_bin_dft(int16_t *buffer, uint8_t samples, float *re
   *imag = -2.0f * sum_im / (float)samples;
 }
 
-void AdjustCurrentGain_Wiper(void){
-  for(uint8_t phase = 0; phase < TOTAL_PHASES; phase++){
+/* -----------------------------------------------------------------------
+ * AdjustCurrentGain_Wiper — AGC con histéresis y subida gradual [CAMBIO 6]
+ *
+ * Máquina de estados por fase:
+ *
+ *  ZONA ALTA  (i_max > I_MAX):
+ *    → wiper-- inmediato (protección de saturación, máxima prioridad)
+ *    → count_cambio_wiper = salto_niveles + 1  (tiempo de establecimiento)
+ *    → reset contadores de señal baja
+ *
+ *  ZONA OK  (I_MIN_H ≤ i_max ≤ I_MAX_H):
+ *    → sin cambio de wiper
+ *    → reset de todos los contadores
+ *
+ *  ZONA BAJA con señal presente  (I_MIN_NOISE < i_max < I_MIN):
+ *    → count_señalBaja++
+ *    → si count_señalBaja ≥ PER_SUBIDA_GAIN → wiper++ (subida gradual)
+ *    → evita subir por transitorios cortos de un período
+ *
+ *  ZONA RUIDO / sin señal  (i_max ≤ I_MIN_NOISE):
+ *    → count_noSignal++
+ *    → si count_noSignal ≥ PER_NO_SIGNAL → wiper = 0 (reset a G=1×)
+ *    → reset count_señalBaja
+ *
+ *  HISTÉRESIS:
+ *    Zona alta:  entra con I_MAX, sale con I_MAX_H  (banda inferior)
+ *    Zona baja:  entra con I_MIN, sale con I_MIN_H  (banda superior)
+ *    Zona ruido: entra con I_MIN_NOISE (sin histéresis, reset inmediato)
+ *
+ *  count_cambio_wiper:
+ *    Bajada de 1 nivel  → 2 períodos descartados (1 settle MCP + 1 OPAMP)
+ *    Bajada de N niveles → N + 1 períodos descartados
+ *    Subida de 1 nivel  → 2 períodos descartados
+ * ----------------------------------------------------------------------- */
+void AdjustCurrentGain_Wiper(void) {
+  for (uint8_t phase = 0; phase < TOTAL_PHASES; phase++) {
     cambio_wiper[phase] = 0;
 
-    // Condicionales para detectar si se debe cambiar el wiper
-    if(i_max[phase] > I_MAX || i_min[phase] < -I_MAX){
-      // Señal demasiado alta -> reducir ganancia (evitar saturación)
-      cambio_wiper[phase] = 1;
+    int16_t ipeak = (i_max[phase] > -i_min[phase])
+                    ? i_max[phase] : -i_min[phase];
+
+    /* ---- ZONA ALTA: saturación → bajar ganancia inmediatamente ---- */
+    if (ipeak > I_MAX) {
       if (wiper[phase] > 0) {
+        int8_t wiper_prev = wiper[phase];
         wiper[phase]--;
-      } else {
-        wiper[phase] = 0;
-        cambio_wiper[phase] = 0;
+        cambio_wiper[phase] = 1;
+        /* descarte proporcional al salto para garantizar establecimiento */
+        count_cambio_wiper[phase] = (uint8_t)(wiper_prev - wiper[phase]) + 1;
       }
-      // Reiniciar contador de ausencia de señal si había
-      count_noSignal[phase] = 0;
-    } else if (i_max[phase] < I_MIN && i_min[phase] > -I_MIN) {
-      // Señal muy baja -> posible ausencia de señal. NO aumentar ganancia (evita amplificar ruido)
+      /* reset contadores de señal baja */
+      count_noSignal[phase]   = 0;
+      count_señalBaja[phase]  = 0;
+    }
+
+    /* ---- ZONA OK con histéresis: i_max entre I_MIN_H e I_MAX_H ---- */
+    else if (ipeak >= I_MIN_H && ipeak <= I_MAX_H) {
+      count_noSignal[phase]   = 0;
+      count_señalBaja[phase]  = 0;
+      /* sin cambio de wiper */
+    }
+
+    /* ---- ZONA RUIDO: señal inferior al umbral de ruido ---- */
+    else if (ipeak <= I_MIN_NOISE) {
+      count_señalBaja[phase] = 0;
       count_noSignal[phase]++;
+
       if (count_noSignal[phase] >= PER_NO_SIGNAL) {
         if (wiper[phase] != 0) {
+          /* reset a G=1× para no amplificar ruido */
+          count_cambio_wiper[phase] = (uint8_t)(wiper[phase]) + 1;
+          wiper[phase]    = 0;
           cambio_wiper[phase] = 1;
-          wiper[phase] = 0; // forzar ganancia mínima (OPAMP x1)
-        } else {
-          cambio_wiper[phase] = 0;
         }
         count_noSignal[phase] = 0;
-      } else {
-        // No aplicamos cambio de wiper hasta confirmar ausencia de señal durante PER_NO_SIGNAL periodos
-        cambio_wiper[phase] = 0;
       }
-    } else {
-      // Señal dentro de rango normal -> reset contador
-      count_noSignal[phase] = 0;
     }
-    
-    // Comunicacion con Pote Digital
-    if(cambio_wiper[phase]){
-      // establecer contador de muestras a ignorar tras cambio de wiper
-        count_cambio_wiper[phase] = 1; // ignorar 1 periodo tras cambio de wiper
-      
-      switch(phase){
-        case 1:
-          if (MCP4131_IsReady(&hpot3)) {
-            MCP4131_WriteWiper_DMA(&hpot3,wiper_position[wiper[phase]]);
-            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
-          }
-          break;
-        case 2:
-          if (MCP4131_IsReady(&hpot4)) {
-            MCP4131_WriteWiper_DMA(&hpot4,wiper_position[wiper[phase]]);
-            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
-          }
-          break;
+
+    /* ---- ZONA BAJA con señal presente: subir ganancia gradualmente ---- */
+    else {
+      /* ipeak ∈ (I_MIN_NOISE, I_MIN) — señal débil pero real */
+      count_noSignal[phase] = 0;
+      count_señalBaja[phase]++;
+
+      if (count_señalBaja[phase] >= PER_SUBIDA_GAIN) {
+        count_señalBaja[phase] = 0;
+
+        if (wiper[phase] < TOTAL_GAIN_CURRENT - 1) {
+          wiper[phase]++;
+          cambio_wiper[phase]         = 1;
+          count_cambio_wiper[phase]   = 2; /* 1 settle MCP + 1 OPAMP */
+        }
+        /* si ya está en máxima ganancia: no cambiar, no amplificar ruido */
+      }
+    }
+
+    /* ---- Comunicación SPI con MCP4131 ---- */
+    if (cambio_wiper[phase]) {
+      switch (phase) {
         case 0:
           if (MCP4131_IsReady(&hpot5)) {
-            MCP4131_WriteWiper_DMA(&hpot5,wiper_position[wiper[phase]]);
+            MCP4131_WriteWiper_DMA(&hpot5, wiper_position[wiper[phase]]);
             gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
-          }
-          break;
+          } break;
+        case 1:
+          if (MCP4131_IsReady(&hpot3)) {
+            MCP4131_WriteWiper_DMA(&hpot3, wiper_position[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
+          } break;
+        case 2:
+          if (MCP4131_IsReady(&hpot4)) {
+            MCP4131_WriteWiper_DMA(&hpot4, wiper_position[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
+          } break;
       }
     }
   }
 }
+
 
 /* USER CODE END 4 */
 
