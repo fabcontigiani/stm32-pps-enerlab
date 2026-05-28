@@ -42,19 +42,19 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #define PER_ADC_CHANNEL_COUNT 4U
 #define TOTAL_CHANNELS        6U
 #define TOTAL_PHASES          3U
-#define MAX_SAMPLES           120  // Cantidad máxima de muestras por periodo
-#define MAX_RMS               128    // Cantidad muestras RMS por canal
+#define MAX_SAMPLES           120 // Cantidad máxima de muestras por periodo
+#define MAX_RMS               128 // Cantidad muestras RMS por canal
 #define MAX_RMS_PROM          1   // Cantidad de valores RMS promediados 10 = 50 segundos
-#define HYST                  40    // Histéresis para cruce (cuentas ADC)
-#define I_MAX                 1843  // 90% = 0.9 * 4095 / 2
+#define HYST                  40  // Histéresis para cruce (cuentas ADC)
+#define I_MAX                 1843// 90% = 0.9 * 4095 / 2
 #define I_MIN                 512 // 10% = 0.1 * 4095 / 2 
-#define TOTAL_GAIN_CURRENT    7U
-#define TIMEOUT_MAX           500U
-#define PER_NO_SIGNAL         1U    // cantidad de periodos sin señal para resetear wiper a ganancia mínima
+#define TOTAL_GAIN_CURRENT    7U  // cantidad de niveles de ganancia de corriente
+#define TIMEOUT_MAX           500U// cantidad de periodos para timeout de cruce por cero 
+#define PER_NO_SIGNAL         1U  // cantidad de periodos sin señal para resetear wiper a ganancia mínima
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -121,6 +121,7 @@ static float P_total[TOTAL_PHASES];
 static float Q_total[TOTAL_PHASES];
 static float S[TOTAL_PHASES];
 static float FP[TOTAL_PHASES];
+static float FP_angulo[TOTAL_PHASES]; //angulo de fase completo en [-180, +180] grados
 
 static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
 
@@ -132,7 +133,7 @@ static int8_t wiper[TOTAL_PHASES] = {6, 6, 6};
 static uint8_t cambio_wiper[TOTAL_PHASES] = {0, 0, 0};
 static uint8_t count_cambio_wiper[TOTAL_PHASES] = {0, 0, 0};
 const uint8_t wiper_position[TOTAL_GAIN_CURRENT] = {64, 85, 102, 113, 120, 124, 126};
-const uint8_t wiper_position_reverse[TOTAL_GAIN_CURRENT] = {64, 43, 26, 15, 8, 4, 2};
+//const uint8_t wiper_position_reverse[TOTAL_GAIN_CURRENT] = {64, 43, 26, 15, 8, 4, 2};
 static float gain_table[TOTAL_PHASES] = {1, 1, 1};
 
 static uint8_t count_noSignal[TOTAL_PHASES] = {0, 0, 0}; // contador de periodos sin señal para cada fase
@@ -160,11 +161,14 @@ void SystemClock_Config(void);
 static float calculate_rms(int16_t *buffer, uint8_t samples);
 static float adc_to_voltage(float adc_value, uint8_t phase);
 static float adc_to_current(float adc_value, float gain, uint8_t phase);
+
+static float adc2_to_power(float adc2_value, float gain, uint8_t phase);
+
 void AdjustCurrentGain_Wiper(void);
 //uint8_t reverse_vector(const uint8_t *vector, uint8_t index);
 float calculate_gain(uint8_t wiper_position, uint8_t invertido);
 
-static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples);
+static float calculate_active_power(int16_t *buffer_v, int16_t *buffer_i, uint8_t samples);
 static void calculate_single_bin_dft(int16_t *buffer, uint8_t samples, float *real, float *imag);
 static float calculate_mean(float *buffer, uint8_t samples);
 
@@ -249,7 +253,7 @@ int main(void)
     /* Timeout de cruce por cero para evitar quedarse esperando si la TENSION se pierde o es nula
     muestreo a 5kHz (ts = 0,2ms) 
     eligiendo un timeout de T (TIMEOUT_MAX)
-    numero de muestras: n = T/ts
+    numero de muestras: n = T/ts = 500/0,2 = 2500
     */
     if(timer_cont > TIMEOUT_MAX){
       timeout = 1;
@@ -340,8 +344,53 @@ int main(void)
               rms_real[ph] = adc_to_voltage(rms_buffer[ph][idx], ph);
               rms_real[ph + TOTAL_PHASES] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][idx], gain_table[ph], ph);
 
+
               rms_buffer[ph + TOTAL_PHASES][idx] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][idx], gain_table[ph], ph);
-              
+
+              /* ----------------------------------------------------------------
+               * [CAMBIO] POTENCIA ACTIVA P
+               * Método: producto directo muestra×muestra (IEEE 1459-2010)
+               *   P = (1/N) * sum(v[n] * i[n])
+               *
+               * Ventajas vs DFT bin único:
+               *   - Captura P de todos los armónicos, no solo el fundamental
+               *   - El signo es correcto por definición:
+               *       v[n] e i[n] se miden con la misma referencia de offset
+               *       Si la corriente sale del nodo (generación), el producto
+               *       es negativo de forma natural, sin necesidad de negar.
+               *
+               * La función devuelve ADC² → se convierte con adc2_to_power()
+               * que aplica: P_real = P_adc2 * vdda² * Kv * Ki / G
+               * ---------------------------------------------------------------- */
+              float P_adc2 = calculate_active_power(
+                  sample_buffer[ph],
+                  sample_buffer[ph + TOTAL_PHASES],
+                  sample_index);
+
+              P_buffer[ph][idx] = adc2_to_power(P_adc2, gain_table[ph], ph);
+
+              /* ----------------------------------------------------------------
+               * [CAMBIO] POTENCIA REACTIVA Q
+               * Método: DFT bin k=1 (solo fundamental), igual que antes,
+               * pero SIN negación arbitraria.
+               *
+               * Convención de signo (con e^{-jwt}, factor 2/N):
+               *   Q > 0 → corriente retrasada (carga inductiva)
+               *   Q < 0 → corriente adelantada (carga capacitiva o generación)
+               *
+               * Q = 0.5 * (Vim*Ire - Vre*Iim)
+               * ---------------------------------------------------------------- */
+              float v_re, v_im, i_re, i_im;
+              calculate_single_bin_dft(sample_buffer[ph], sample_index, &v_re, &v_im);
+              calculate_single_bin_dft(sample_buffer[ph + TOTAL_PHASES], sample_index, &i_re, &i_im);
+
+              float Q_adc2 = 0.5f * (v_im * i_re - v_re * i_im); /* sin negación */
+
+              Q_buffer[ph][idx] = adc2_to_power(Q_adc2, gain_table[ph], ph);
+
+
+
+              /* ESTO ES VIEJO
               float v_re, v_im, i_re, i_im;
               calculate_single_bin_dft(sample_buffer[ph], sample_index, &v_re, &v_im);
               calculate_single_bin_dft(sample_buffer[ph + TOTAL_PHASES], sample_index, &i_re, &i_im);
@@ -356,38 +405,77 @@ int main(void)
               Q_buffer[ph][idx] = -Q_fund;
               Q_buffer[ph][idx] = adc_to_voltage(Q_buffer[ph][idx], ph);
               Q_buffer[ph][idx] = adc_to_current(Q_buffer[ph][idx], gain_table[ph], ph);
-            }        
+              */
+            }    
           }
 
+          /* --- Nivel 2: promedio de MAX_RMS períodos --- */
           if(rms_index == MAX_RMS - 1){
             rms_prom_index = (rms_prom_index + 1) % MAX_RMS_PROM;
 
             for(uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
-              rms_prom_buffer[ph][rms_prom_index] = calculate_mean(rms_buffer[ph], 1 + rms_index - count_cambio_wiper[ph]);
-              rms_prom_buffer[ph + TOTAL_PHASES][rms_prom_index] = calculate_mean(rms_buffer[ph + TOTAL_PHASES], 1 + rms_index - count_cambio_wiper[ph + TOTAL_PHASES]);
+              uint8_t n_valid = 1 + rms_index - count_cambio_wiper[ph];
+
+              rms_prom_buffer[ph][rms_prom_index] = calculate_mean(rms_buffer[ph], n_valid);
+
+              rms_prom_buffer[ph + TOTAL_PHASES][rms_prom_index] = calculate_mean(rms_buffer[ph + TOTAL_PHASES], n_valid);
 
               //rms_real[ph] = adc_to_voltage(rms_prom_buffer[ph][rms_prom_index]);
 
-              P_prom_buffer[ph][rms_prom_index] = calculate_mean(P_buffer[ph], 1 + rms_index - count_cambio_wiper[ph]);
-              Q_prom_buffer[ph][rms_prom_index] = calculate_mean(Q_buffer[ph], 1 + rms_index - count_cambio_wiper[ph]);
+              P_prom_buffer[ph][rms_prom_index] = calculate_mean(P_buffer[ph], n_valid);
+              Q_prom_buffer[ph][rms_prom_index] = calculate_mean(Q_buffer[ph], n_valid);
             }
           }
 
+          /* --- Nivel 3: promedio final y cálculo de S, FP --- */
           if(rms_prom_index == MAX_RMS_PROM - 1){
             rms_prom_index = -1;
 
-            for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++) {
-              rms_total[ph] = calculate_mean(rms_prom_buffer[ph], MAX_RMS_PROM);
+            for (uint8_t ph = 0; ph < TOTAL_PHASES; ph++){
+              rms_total[ph] = adc_to_voltage(calculate_mean(rms_prom_buffer[ph], MAX_RMS_PROM), ph);
+
               rms_total[ph + TOTAL_PHASES] = calculate_mean(rms_prom_buffer[ph + TOTAL_PHASES], MAX_RMS_PROM);
-              rms_total[ph] = adc_to_voltage(rms_total[ph], ph);
-              
+
               P_total[ph] = calculate_mean(P_prom_buffer[ph], MAX_RMS_PROM);
               Q_total[ph] = calculate_mean(Q_prom_buffer[ph], MAX_RMS_PROM);
 
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
-              //FP[ph] = P_total[ph] / S[ph];
-              FP[ph] = atanf(Q_total[ph] / P_total[ph]) * (180.0f / 3.1415926535f);// Angulo PHI en grados
+              /* ----------------------------------------------------------------
+               * [CAMBIO] FACTOR DE POTENCIA FP
+               *
+               * FP = P / S    (IEEE 1459-2010, rango [-1, +1])
+               *   FP > 0 : flujo neto de energía hacia la carga (consumo)
+               *   FP < 0 : flujo neto de energía hacia la red (generación)
+               *
+               * FP_angulo = atan2(Q, P)  (rango [-180°, +180°])
+               *   Cuadrante I   (P>0, Q>0): consumo inductivo       [0°,  90°]
+               *   Cuadrante II  (P<0, Q>0): generación inductiva    [90°, 180°]
+               *   Cuadrante III (P<0, Q<0): generación capacitiva  [-180°,-90°]
+               *   Cuadrante IV  (P>0, Q<0): consumo capacitivo     [-90°,  0°]
+               * ---------------------------------------------------------------- */
+              if (S[ph] < 0.001f) {
+                /* Sin señal: evitar división por cero */
+                FP[ph] = 0.0f;
+                FP_angulo[ph] = 0.0f;
+              } else {
+                FP[ph] = P_total[ph] / S[ph];
+                FP_angulo[ph] = atan2f(Q_total[ph], P_total[ph])
+                                * (180.0f / 3.1415926535f);
+              }
+
+
+
+
+
+              /* VIEJO
+              if(P_total[ph]==0 || S[ph]==0){
+                FP[ph] = 0.0f;
+              }else{
+                //FP[ph] = P_total[ph] / S[ph];
+                FP[ph] = atanf(Q_total[ph] / P_total[ph]) * (180.0f / 3.1415926535f);// Angulo PHI en grados
+              }
+                */
             }
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
@@ -421,10 +509,8 @@ int main(void)
             }
           }
         }
-        
         sample_index++; // Avanza al siguiente sample del período
-      }
-      else {
+      } else {
         // seguridad: overflow del buffer
         muestreo = 0;
         sample_index = 0;
@@ -432,19 +518,26 @@ int main(void)
     }
   
     // === 5. Envío por UART ===
-    if(calculos_ready){
+    if (calculos_ready) {
       calculos_ready = 0;
 
       int len = snprintf(
-        rms_tx_buf,
-        sizeof(rms_tx_buf),
-        "{\"version\":\"%s\",\"rms\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],\"p\":[%.3f,%.3f,%.3f],\"q\":[%.3f,%.3f,%.3f],\"fp\":[%.3f,%.3f,%.3f]}\r\n",
+        rms_tx_buf, sizeof(rms_tx_buf),
+        "{\"version\":\"%s\","
+        "\"rms\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
+        "\"p\":[%.3f,%.3f,%.3f],"
+        "\"q\":[%.3f,%.3f,%.3f],"
+        "\"s\":[%.3f,%.3f,%.3f],"
+        "\"fp\":[%.4f,%.4f,%.4f],"
+        "\"fpa\":[%.2f,%.2f,%.2f]}\r\n",
         FIRMWARE_VERSION,
         rms_total[0], rms_total[1], rms_total[2],
         rms_total[3], rms_total[4], rms_total[5],
-        P_total[0], P_total[1], P_total[2],
-        Q_total[0], Q_total[1], Q_total[2],
-        FP[0], FP[1], FP[2]
+        P_total[0],   P_total[1],   P_total[2],
+        Q_total[0],   Q_total[1],   Q_total[2],
+        S[0],         S[1],         S[2],
+        FP[0],        FP[1],        FP[2],
+        FP_angulo[0], FP_angulo[1], FP_angulo[2]
       );
 
       if (len > 0 && len < (int)sizeof(rms_tx_buf) && uartReady) {
@@ -607,16 +700,11 @@ static float adc_to_voltage(float adc_value, uint8_t phase)
 {
   // ECUACION: V = adc_value * (vdda/4095) * (Vi/Vo)
 
-  switch(phase){
-    case 0:
-      return adc_value * vdda * V1_GAIN;
-      break;
-    case 1:
-      return adc_value * vdda * V2_GAIN;
-      break;
-    case 2:
-      return adc_value * vdda * V3_GAIN;
-      break;
+  switch (phase) {
+    case 0: return adc_value * vdda * V1_GAIN;
+    case 1: return adc_value * vdda * V2_GAIN;
+    case 2: return adc_value * vdda * V3_GAIN;
+    default: return 0.0f;
   }
   // calculo antiguo, funciona bien
   //return ((float)adc_value * vdda * 0.08153905715f);//adc_value*(197.7/0.5842)*(vdda/4095)
@@ -624,18 +712,89 @@ static float adc_to_voltage(float adc_value, uint8_t phase)
 
 static float adc_to_current(float adc_value, float gain, uint8_t phase)
 {
-  switch(phase){
-    case 0:
-      return (adc_value * vdda / gain) * I1_GAIN;
-      break;
-    case 1:
-      return (adc_value * vdda / gain) * I2_GAIN;
-      break;
-    case 2:
-      return (adc_value * vdda / gain) * I3_GAIN;
-      break;
+  switch (phase) {
+    case 0: return (adc_value * vdda / gain) * I1_GAIN;
+    case 1: return (adc_value * vdda / gain) * I2_GAIN;
+    case 2: return (adc_value * vdda / gain) * I3_GAIN;
+    default: return 0.0f;
   }
     //return (float) ((adc_value * vdda * 2000.f) / (gain * 33.f * 4095.f));
+}
+
+/* -----------------------------------------------------------------------
+ * [NUEVA] adc2_to_power — convierte ADC² a Watts o VAr
+ *
+ * La DFT y calculate_active_power() trabajan sobre muestras crudas ADC,
+ * por lo que el resultado está en unidades ADC_V × ADC_I.
+ *
+ * La conversión correcta es:
+ *   P_real [W] = P_adc2 × (vdda × Kv) × (vdda × Ki / G)
+ *              = P_adc2 × vdda² × Kv × Ki / G
+ *
+ * Esto es equivalente a aplicar adc_to_voltage() y adc_to_current()
+ * como factores de escala (ambas funciones son lineales sin offset),
+ * por lo que se puede factorizar directamente.
+ * ----------------------------------------------------------------------- */
+static float adc2_to_power(float adc2_value, float gain, uint8_t phase) {
+  /* Extraer solo el factor de escala de cada conversión:
+   *   adc_to_voltage(x, ph)  = x * vdda * Kv   → factor_v = vdda * Kv
+   *   adc_to_current(x, g, ph) = x * vdda * Ki / g → factor_i = vdda * Ki / g
+   */
+  float factor_v, factor_i;
+  switch (phase) {
+    case 0: factor_v = vdda * V1_GAIN; factor_i = vdda * I1_GAIN / gain; break;
+    case 1: factor_v = vdda * V2_GAIN; factor_i = vdda * I2_GAIN / gain; break;
+    case 2: factor_v = vdda * V3_GAIN; factor_i = vdda * I3_GAIN / gain; break;
+    default: return 0.0f;
+  }
+  return adc2_value * factor_v * factor_i;
+}
+
+float calculate_gain(uint8_t wiper_position, uint8_t invertido){
+  if(invertido){
+    return (float) (128.f - wiper_position)/wiper_position;
+  }else{
+    return (float) wiper_position/(128.f - wiper_position);
+  }
+}
+
+static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples) {
+  if (samples == 0) return 0.0f;
+
+  float acc = 0.0f;
+  for (uint16_t n = 0; n < samples; n++) {
+    acc += (float)buffer_tension[n] * (float)buffer_corriente[n];
+  }
+  return (acc / (float) samples);
+}
+
+static float calculate_mean(float *buffer, uint8_t samples) {
+  if (samples == 0) return 0.0f;
+
+  float acc = 0.0f;
+  for (uint16_t i = 0; i < samples; i++) {
+      acc += buffer[i];
+  }
+
+  return acc / (float)samples;
+}
+
+static void calculate_single_bin_dft(int16_t *buffer, uint8_t samples, float *real, float *imag) {
+  if (samples == 0) {
+    *real = 0.0f;
+    *imag = 0.0f;
+    return;
+  }
+  float sum_re = 0.0f;
+  float sum_im = 0.0f;
+  float omega = 2.0f * 3.1415926535f / (float)samples;
+  for (uint16_t n = 0; n < samples; n++) {
+    float angle = omega * (float)n;
+    sum_re += (float)buffer[n] * cosf(angle);
+    sum_im += (float)buffer[n] * sinf(angle);
+  }
+  *real = 2.0f * sum_re / (float)samples;
+  *imag = -2.0f * sum_im / (float)samples;
 }
 
 void AdjustCurrentGain_Wiper(void){
@@ -701,54 +860,6 @@ void AdjustCurrentGain_Wiper(void){
       }
     }
   }
-}
-
-float calculate_gain(uint8_t wiper_position, uint8_t invertido){
-  if(invertido){
-    return (float) (128.f - wiper_position)/wiper_position;
-  }else{
-    return (float) wiper_position/(128.f - wiper_position);
-  }
-}
-
-static float calculate_active_power(int16_t *buffer_tension, int16_t *buffer_corriente, uint8_t samples){
-  if (samples == 0) return 0.0f;
-
-  float acc = 0.0f;
-  for (uint16_t n = 0; n < samples; n++) {
-    acc += (float)buffer_tension[n] * (float)buffer_corriente[n];
-  }
-  return (acc / (float) samples);
-}
-
-static float calculate_mean(float *buffer, uint8_t samples)
-{
-  if (samples == 0) return 0.0f;
-
-  float acc = 0.0f;
-  for (uint16_t i = 0; i < samples; i++) {
-      acc += buffer[i];
-  }
-
-  return acc / (float)samples;
-}
-
-static void calculate_single_bin_dft(int16_t *buffer, uint8_t samples, float *real, float *imag) {
-  if (samples == 0) {
-    *real = 0.0f;
-    *imag = 0.0f;
-    return;
-  }
-  float sum_re = 0.0f;
-  float sum_im = 0.0f;
-  float omega = 2.0f * 3.1415926535f / (float)samples;
-  for (uint16_t n = 0; n < samples; n++) {
-    float angle = omega * (float)n;
-    sum_re += (float)buffer[n] * cosf(angle);
-    sum_im += (float)buffer[n] * sinf(angle);
-  }
-  *real = 2.0f * sum_re / (float)samples;
-  *imag = -2.0f * sum_im / (float)samples;
 }
 
 /* USER CODE END 4 */
