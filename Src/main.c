@@ -84,13 +84,13 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "1.2.0"
+#define FIRMWARE_VERSION "1.3.0"
 #define PER_ADC_CHANNEL_COUNT 4U
 #define TOTAL_CHANNELS        6U
 #define TOTAL_PHASES          3U
 #define MAX_SAMPLES           120 // Cantidad máxima de muestras por periodo
 #define MAX_RMS               128 // Cantidad muestras RMS por canal
-#define MAX_RMS_PROM          1   // Cantidad de valores RMS promediados 10 = 50 segundos
+#define MAX_RMS_PROM          3   // Cantidad de valores RMS promediados 10 = 50 segundos
 #define HYST                  40  // Histéresis para cruce (cuentas ADC)
 
 /* --- Umbrales de corriente con histéresis [CAMBIO 6] ---
@@ -113,11 +113,11 @@ typedef struct {
  * que el wiper cambie en cada período cuando la señal oscila cerca
  * de los umbrales duros (chattering).
  */
-#define I_MAX            1843   /* 90% de fondo de escala = 0.9 * 4095/2    */
-#define I_MAX_H          1566   /* umbral de salida zona alta  = I_MAX * 0.85 */
-#define I_MIN            204    /* 10% de fondo de escala = 0.1 * 4095/2    */
-#define I_MIN_H          245    /* umbral de salida zona baja  = I_MIN * 1.20 */
-#define I_MIN_NOISE      51     /* < 3% de fondo de escala: ruido puro       */ 
+#define I_MAX            1945   /* 95% de fondo de escala = 0.95 * 4095/2    */
+//#define I_MAX_H          1905   /* 93% umbral de salida zona alta  = 0.93 * 4095/2 */
+//#define I_MIN_H          164    /* 8% umbral de salida zona baja  = 0.08 * 4095/2 */
+#define I_MIN            204    /* 10% de fondo de escala = 0.10 * 4095/2    */
+#define I_MIN_NOISE      61     /* < 3% de fondo de escala: ruido puro       */ 
 
 /* --- Períodos para subida gradual de ganancia [CAMBIO 6] ---
  *
@@ -401,12 +401,6 @@ int main(void)
         }
         else {
           rms_index = (rms_index + 1) % MAX_RMS;
-
-          if(!rms_index){
-            count_cambio_wiper[0] = 0;
-            count_cambio_wiper[1] = 0;
-            count_cambio_wiper[2] = 0;
-          }
 
           // Evalua saturacion o cambio de wiper
           AdjustCurrentGain_Wiper();
@@ -927,8 +921,17 @@ void AdjustCurrentGain_Wiper(void) {
     int16_t ipeak = (i_max[phase] > -i_min[phase])
                     ? i_max[phase] : -i_min[phase];
 
+    if (!rms_index) {
+      ipeak = 2047;
+      count_cambio_wiper[phase] = 3;
+    }
+
     /* ---- ZONA ALTA: saturación → bajar ganancia inmediatamente ---- */
     if (ipeak > I_MAX) {
+    /* reset contadores de señal baja */
+      count_noSignal[phase]   = 0;
+      count_señalBaja[phase]  = 0;
+
       if (wiper[phase] > 0) {
         int8_t wiper_prev = wiper[phase];
         wiper[phase]--;
@@ -936,36 +939,17 @@ void AdjustCurrentGain_Wiper(void) {
         /* descarte proporcional al salto para garantizar establecimiento */
         count_cambio_wiper[phase] = (uint8_t)(wiper_prev - wiper[phase]) + 1;
       }
-      /* reset contadores de señal baja */
-      count_noSignal[phase]   = 0;
-      count_señalBaja[phase]  = 0;
     }
 
     /* ---- ZONA OK con histéresis: i_max entre I_MIN_H e I_MAX_H ---- */
-    else if (ipeak >= I_MIN_H && ipeak <= I_MAX_H) {
+    else if (ipeak >= I_MIN) {
       count_noSignal[phase]   = 0;
       count_señalBaja[phase]  = 0;
       /* sin cambio de wiper */
     }
 
-    /* ---- ZONA RUIDO: señal inferior al umbral de ruido ---- */
-    else if (ipeak <= I_MIN_NOISE) {
-      count_señalBaja[phase] = 0;
-      count_noSignal[phase]++;
-
-      if (count_noSignal[phase] >= PER_NO_SIGNAL) {
-        if (wiper[phase] != 0) {
-          /* reset a G=1× para no amplificar ruido */
-          count_cambio_wiper[phase] = (uint8_t)(wiper[phase]) + 1;
-          wiper[phase]    = 0;
-          cambio_wiper[phase] = 1;
-        }
-        count_noSignal[phase] = 0;
-      }
-    }
-
     /* ---- ZONA BAJA con señal presente: subir ganancia gradualmente ---- */
-    else {
+    else if (ipeak >= I_MIN_NOISE){
       /* ipeak ∈ (I_MIN_NOISE, I_MIN) — señal débil pero real */
       count_noSignal[phase] = 0;
       count_señalBaja[phase]++;
@@ -982,22 +966,39 @@ void AdjustCurrentGain_Wiper(void) {
       }
     }
 
+    /* ---- ZONA RUIDO: señal inferior al umbral de ruido ---- */
+    else {
+      count_señalBaja[phase] = 0;
+      count_noSignal[phase]++;
+
+      if (count_noSignal[phase] >= PER_NO_SIGNAL) {
+        count_noSignal[phase] = 0;
+
+        if (wiper[phase] != 3) {
+          /* reset a G=7.5× para no amplificar ruido y a su vez poder registrar una pequeña señal cuando se conecte algo */
+          count_cambio_wiper[phase] = (uint8_t)(wiper[phase]) + 1;
+          wiper[phase]    = 3;
+          cambio_wiper[phase] = 1;
+        }
+      }
+    }
+
     /* ---- Comunicación SPI con MCP4131 ---- */
     if (cambio_wiper[phase]) {
       switch (phase) {
         case 0:
-          if (MCP4131_IsReady(&hpot5)) {
-            MCP4131_WriteWiper_DMA(&hpot5, wiper_position[wiper[phase]]);
-            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
-          } break;
-        case 1:
           if (MCP4131_IsReady(&hpot3)) {
             MCP4131_WriteWiper_DMA(&hpot3, wiper_position[wiper[phase]]);
             gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
           } break;
-        case 2:
+        case 1:
           if (MCP4131_IsReady(&hpot4)) {
             MCP4131_WriteWiper_DMA(&hpot4, wiper_position[wiper[phase]]);
+            gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
+          } break;
+        case 2:
+          if (MCP4131_IsReady(&hpot5)) {
+            MCP4131_WriteWiper_DMA(&hpot5, wiper_position[wiper[phase]]);
             gain_table[phase] = calculate_gain(wiper_position[wiper[phase]], 0);
           } break;
       }
