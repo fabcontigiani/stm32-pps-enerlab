@@ -133,6 +133,10 @@ typedef struct {
 #define TOTAL_GAIN_CURRENT  7U  // cantidad de niveles de ganancia de corriente
 #define TIMEOUT_MAX         500U// cantidad de periodos para timeout de cruce por cero 
 #define PER_NO_SIGNAL       1U  // cantidad de periodos sin señal para resetear wiper a ganancia mínima
+
+#define CONV_RAD_TO_DEG     57.2957795131f // 180 / pi
+#define FHI_ANGLE_OFFSET    4.0f // ángulo de fase adicional para corregir desfase del sensor de corriente (en grados, ajustado según medición)
+
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
 #define V2_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -201,6 +205,7 @@ static float Q_total[TOTAL_PHASES];
 static float S[TOTAL_PHASES];
 static float FP[TOTAL_PHASES];
 static float FP_angulo[TOTAL_PHASES]; //angulo de fase completo en [-180, +180] grados
+static float FP_calculado[TOTAL_PHASES]; //factor de potencia calculado a partir del ángulo de fase, para comparación con FP=P/S
 
 static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
 
@@ -447,8 +452,7 @@ int main(void)
 
               /* ----------------------------------------------------------------
                * [CAMBIO] POTENCIA REACTIVA Q
-               * Método: DFT bin k=1 (solo fundamental), igual que antes,
-               * pero SIN negación arbitraria.
+               * Método: DFT bin k=1 (solo fundamental).
                *
                * Convención de signo (con e^{-jwt}, factor 2/N):
                *   Q > 0 → corriente retrasada (carga inductiva)
@@ -463,25 +467,6 @@ int main(void)
               float Q_adc2 = 0.5f * (v_im * i_re - v_re * i_im); /* sin negación */
 
               Q_buffer[ph][idx] = adc2_to_power(Q_adc2, gain_table[ph], ph);
-
-
-
-              /* ESTO ES VIEJO
-              float v_re, v_im, i_re, i_im;
-              calculate_single_bin_dft(sample_buffer[ph], sample_index, &v_re, &v_im);
-              calculate_single_bin_dft(sample_buffer[ph + TOTAL_PHASES], sample_index, &i_re, &i_im);
-              
-              float P_fund = 0.5f * (v_re * i_re + v_im * i_im);
-              float Q_fund = 0.5f * (v_im * i_re - v_re * i_im);
-              
-              P_buffer[ph][idx] = -P_fund;
-              P_buffer[ph][idx] = adc_to_voltage(P_buffer[ph][idx], ph);
-              P_buffer[ph][idx] = adc_to_current(P_buffer[ph][idx], gain_table[ph], ph);
-
-              Q_buffer[ph][idx] = -Q_fund;
-              Q_buffer[ph][idx] = adc_to_voltage(Q_buffer[ph][idx], ph);
-              Q_buffer[ph][idx] = adc_to_current(Q_buffer[ph][idx], gain_table[ph], ph);
-              */
             }    
           }
 
@@ -535,23 +520,12 @@ int main(void)
                 FP[ph] = 0.0f;
                 FP_angulo[ph] = 0.0f;
               } else {
+                FP_angulo[ph] = atan2f(Q_total[ph], P_total[ph]) * CONV_RAD_TO_DEG - FHI_ANGLE_OFFSET;
+                
+                FP_calculado[ph] = cosf(FP_angulo[ph] * (M_PI / 180.0f)); // FP calculado a partir del ángulo de fase
+                
                 FP[ph] = P_total[ph] / S[ph];
-                FP_angulo[ph] = atan2f(Q_total[ph], P_total[ph])
-                                * (180.0f / 3.1415926535f);
               }
-
-
-
-
-
-              /* VIEJO
-              if(P_total[ph]==0 || S[ph]==0){
-                FP[ph] = 0.0f;
-              }else{
-                //FP[ph] = P_total[ph] / S[ph];
-                FP[ph] = atanf(Q_total[ph] / P_total[ph]) * (180.0f / 3.1415926535f);// Angulo PHI en grados
-              }
-                */
             }
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
@@ -564,7 +538,8 @@ int main(void)
     if (muestreo) {
       if (sample_index < MAX_SAMPLES) {
         for (uint8_t ch = 0; ch < TOTAL_CHANNELS; ch++) {
-          //en el buffer "valid_channels" se tienen los canales de tension y corriente (se omite ch3 con VREFINT y ch7 con OFFSET)
+          //en el buffer "valid_channels" se tienen los canales de tension y corriente
+          //adcData.channels[7] es el offset común para tensión y corriente, que se resta para centrar en cero
           sample_buffer[ch][sample_index] = (int16_t)adcData.channels[valid_channels[ch]] - (int16_t)adcData.channels[7];
         }
 
@@ -594,12 +569,6 @@ int main(void)
     }
   
     // === 5. Envío por UART ===
-      /*
-      * [CAMBIO] Se agrega FP_angulo al JSON para indicar cuadrante exacto.
-      * Formato nuevo:
-      *   "fp"  : factor de potencia IEEE 1459  [-1, +1]
-      *   "fpa" : ángulo de fase atan2(Q,P)     [-180°, +180°]
-      */
     if (calculos_ready) {
       calculos_ready = 0;
 
@@ -611,6 +580,7 @@ int main(void)
         "\"q\":[%.3f,%.3f,%.3f],"
         "\"s\":[%.3f,%.3f,%.3f],"
         "\"fp\":[%.4f,%.4f,%.4f],"
+        "\"fpc\":[%.4f,%.4f,%.4f],"
         "\"fpa\":[%.2f,%.2f,%.2f]}\r\n",
         FIRMWARE_VERSION,
         rms_total[0], rms_total[1], rms_total[2],
@@ -619,6 +589,7 @@ int main(void)
         Q_total[0],   Q_total[1],   Q_total[2],
         S[0],         S[1],         S[2],
         FP[0],        FP[1],        FP[2],
+        FP_calculado[0], FP_calculado[1], FP_calculado[2],
         FP_angulo[0], FP_angulo[1], FP_angulo[2]
       );
 
@@ -628,16 +599,6 @@ int main(void)
         uartReady = 0;
       }
     }
-
-    /*
-    //Mensaje de encendido
-    static const char mensaje_enc[] = "Encendiendo Dispositivo\r\n";
-    if (uartReady) {
-        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)mensaje_enc, (uint16_t)(sizeof(mensaje_enc) - 1));
-        uartReady = 0;
-    }
-    */
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -707,26 +668,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     adcIncData.channels[i + PER_ADC_CHANNEL_COUNT] = (uint16_t)((packed >> 16) & 0xFFFF);
   }
 
-/*
-  // Prepare a single message with all 6 channels taken from adcData
-  int len = 0;
-  for (uint32_t ch = 0; ch < (PER_ADC_CHANNEL_COUNT * 2) && len < (int)sizeof(msg); ++ch) {
-    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "CH%u:%u ",
-                    (unsigned int)ch, (unsigned int)adcIncData.channels[ch]);
-  }
-  if (len < (int)sizeof(msg)) {
-    len += snprintf(msg + len, sizeof(msg) - (size_t)len, "\r\n");
-  }
-  if (len > 0 && uartReady) {
-    HAL_UART_Transmit_DMA(&huart1, (uint8_t *)msg, (uint16_t)len);
-    uartReady = 0;
-  }
-*/
-
   timer_cont++;
-
-  /* Signal main loop that new ADC data is ready */
-  flag_adc_ready = 1;
+  flag_adc_ready = 1; /* Signal main loop that new ADC data is ready */
 }
 
 
