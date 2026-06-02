@@ -84,7 +84,7 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "1.3.0"
+#define FIRMWARE_VERSION "1.3.1"
 #define PER_ADC_CHANNEL_COUNT 4U
 #define TOTAL_CHANNELS        6U
 #define TOTAL_PHASES          3U
@@ -135,7 +135,7 @@ typedef struct {
 #define PER_NO_SIGNAL       1U  // cantidad de periodos sin señal para resetear wiper a ganancia mínima
 
 #define CONV_RAD_TO_DEG     57.2957795131f // 180 / pi
-#define FHI_ANGLE_OFFSET    4.0f // ángulo de fase adicional para corregir desfase del sensor de corriente (en grados, ajustado según medición)
+#define FHI_ANGLE_OFFSET    0.0f // ángulo de fase adicional para corregir desfase del sensor de corriente (en grados, ajustado según medición)
 
 /*
 #define V1_GAIN               (222.0f / (0.6505f * 4095.f))
@@ -145,9 +145,9 @@ typedef struct {
 #define I2_GAIN               (10.46f / (0.164f * 4095.f))
 #define I3_GAIN               (10.51f / (0.168f * 4095.f))
 */
-const float V1_GAIN = 0.08022185119191212188f;
-const float V2_GAIN = 0.08054880910857070697f;
-const float V3_GAIN = 0.07951654144835709759f;
+const float V1_GAIN = 0.08205239034f;
+const float V2_GAIN = 0.08265239034f;
+const float V3_GAIN = 0.08265239034f;
 const float I1_GAIN = 0.01457762941325099933f;
 const float I2_GAIN = 0.01482773367120644378f;
 const float I3_GAIN = 0.01485965187518037064f;
@@ -420,6 +420,8 @@ int main(void)
 
               rms_buffer[ph][idx] = calculate_rms(sample_buffer[ph], sample_index);
 
+              //sample_buffer[ph + TOTAL_PHASES][idx] = - sample_buffer[ph + TOTAL_PHASES][idx];
+
               rms_buffer[ph + TOTAL_PHASES][idx] = calculate_rms(sample_buffer[ph + TOTAL_PHASES], sample_index);
 
               rms_buffer[ph + TOTAL_PHASES][idx] = adc_to_current(rms_buffer[ph + TOTAL_PHASES][idx], gain_table[ph], ph);
@@ -537,10 +539,11 @@ int main(void)
     // === 4. Acumulación de muestras SOLO dentro del período ===
     if (muestreo) {
       if (sample_index < MAX_SAMPLES) {
-        for (uint8_t ch = 0; ch < TOTAL_CHANNELS; ch++) {
+        for (uint8_t ch = 0; ch < TOTAL_PHASES; ch++) {
           //en el buffer "valid_channels" se tienen los canales de tension y corriente
           //adcData.channels[7] es el offset común para tensión y corriente, que se resta para centrar en cero
-          sample_buffer[ch][sample_index] = (int16_t)adcData.channels[valid_channels[ch]] - (int16_t)adcData.channels[7];
+          sample_buffer[ch][sample_index] = (int16_t)adcData.channels[ch] - (int16_t)adcData.channels[7];
+          sample_buffer[ch + TOTAL_PHASES][sample_index] = -((int16_t)adcData.channels[ch + TOTAL_PHASES + 1] - (int16_t)adcData.channels[7]);
         }
 
         // Cálculo de valores máximos y mínimos para cada fase (canales de corriente)
