@@ -84,7 +84,7 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "1.3.1"
+#define FIRMWARE_VERSION "1.4.0"
 #define PER_ADC_CHANNEL_COUNT 4U
 #define TOTAL_CHANNELS        6U
 #define TOTAL_PHASES          3U
@@ -147,7 +147,7 @@ typedef struct {
 */
 const float V1_GAIN = 0.08205239034f;
 const float V2_GAIN = 0.08265239034f;
-const float V3_GAIN = 0.08265239034f;
+const float V3_GAIN = 0.08255239034f;
 const float I1_GAIN = 0.01457762941325099933f;
 const float I2_GAIN = 0.01482773367120644378f;
 const float I3_GAIN = 0.01485965187518037064f;
@@ -204,7 +204,7 @@ static float P_total[TOTAL_PHASES];
 static float Q_total[TOTAL_PHASES];
 static float S[TOTAL_PHASES];
 static float FP[TOTAL_PHASES];
-static float FP_angulo[TOTAL_PHASES]; //angulo de fase completo en [-180, +180] grados
+static float phi[TOTAL_PHASES]; //angulo de fase completo en [-180, +180] grados
 static float FP_calculado[TOTAL_PHASES]; //factor de potencia calculado a partir del ángulo de fase, para comparación con FP=P/S
 
 static float rms_real[TOTAL_CHANNELS];                      //valores RMS convertidos a voltaje y corriente 
@@ -499,8 +499,13 @@ int main(void)
 
               rms_total[ph + TOTAL_PHASES] = calculate_mean(rms_prom_buffer[ph + TOTAL_PHASES], MAX_RMS_PROM);
 
+              if(rms_total[ph + TOTAL_PHASES] < 0.2f){
+                rms_total[ph + TOTAL_PHASES] = 0;
+              }
+
               P_total[ph] = calculate_mean(P_prom_buffer[ph], MAX_RMS_PROM);
               Q_total[ph] = calculate_mean(Q_prom_buffer[ph], MAX_RMS_PROM);
+
 
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
@@ -520,14 +525,48 @@ int main(void)
               if (S[ph] < 0.001f) {
                 /* Sin señal: evitar división por cero */
                 FP[ph] = 0.0f;
-                FP_angulo[ph] = 0.0f;
+                phi[ph] = 0.0f;
               } else {
-                FP_angulo[ph] = atan2f(Q_total[ph], P_total[ph]) * CONV_RAD_TO_DEG - FHI_ANGLE_OFFSET;
+                //FP_angulo[ph] = atan2f(Q_total[ph], P_total[ph]) * CONV_RAD_TO_DEG - FHI_ANGLE_OFFSET;
                 
-                FP_calculado[ph] = cosf(FP_angulo[ph] * (M_PI / 180.0f)); // FP calculado a partir del ángulo de fase
+                //FP_calculado[ph] = cosf(FP_angulo[ph] * (M_PI / 180.0f)); // FP calculado a partir del ángulo de fase
                 
-                FP[ph] = P_total[ph] / S[ph];
+                phi[ph] = acosf(P_total[ph] / S[ph]);
+
+                FP[ph] = cosf(phi[ph]);
+                
+                // Fabri:
+                // Banda muerta para Q cercano a cero (+/- 5VAr)
+                if (Q_total[ph] <= 5.0f && Q_total[ph] >= -5.0f) {
+                // No se tiene suficiente certeza sobre el signo de Q cuando está cerca de cero, tratar como resistivo puro
+                  phi[ph] = 0.0f;
+                }
+                else if(Q_total[ph] < -5.0f){
+                  phi[ph] = -phi[ph]; // Corrige el signo del ángulo para cargas capacitivas (Q<0)
+                }
+                
+                // Fabri:
+                // Banda muerta para P cercano a cero (+/- 5W)
+                if (P_total[ph] <= 5.0f && P_total[ph] >= -5.0f) {
+                  // No se tiene suficiente certeza sobre el signo de P cuando está cerca de cero, tratar como sin señal
+                  FP[ph] = 0.0f;
+                }
+                else if(P_total[ph] < -5.0f){
+                  // Corrige el signo del factor de potencia para generación (P<0)
+                  FP[ph] = -FP[ph]; 
+                }
+
+                phi[ph] *= CONV_RAD_TO_DEG;
+
+
+                //FP[ph] = P_total[ph] / S[ph];
+                
+                //FP_angulo[ph] *= CONV_RAD_TO_DEG; // convertir a grados
               }
+
+                
+
+                  
             }
             calculos_ready = 1; // listo para enviar por UART
             adc_calibrated = 0; // 0 para volver a calibrar Vdda
@@ -583,8 +622,7 @@ int main(void)
         "\"q\":[%.3f,%.3f,%.3f],"
         "\"s\":[%.3f,%.3f,%.3f],"
         "\"fp\":[%.4f,%.4f,%.4f],"
-        "\"fpc\":[%.4f,%.4f,%.4f],"
-        "\"fpa\":[%.2f,%.2f,%.2f]}\r\n",
+        "\"phi\":[%.2f,%.2f,%.2f]}\r\n",
         FIRMWARE_VERSION,
         rms_total[0], rms_total[1], rms_total[2],
         rms_total[3], rms_total[4], rms_total[5],
@@ -592,8 +630,7 @@ int main(void)
         Q_total[0],   Q_total[1],   Q_total[2],
         S[0],         S[1],         S[2],
         FP[0],        FP[1],        FP[2],
-        FP_calculado[0], FP_calculado[1], FP_calculado[2],
-        FP_angulo[0], FP_angulo[1], FP_angulo[2]
+        phi[0], phi[1], phi[2]
       );
 
       if (len > 0 && len < (int)sizeof(rms_tx_buf) && uartReady) {
@@ -868,7 +905,7 @@ void AdjustCurrentGain_Wiper(void) {
                     ? i_max[phase] : -i_min[phase];
 
     if (!rms_index) {
-      ipeak = 2047;
+      ipeak = 0;
       count_cambio_wiper[phase] = 3;
     }
 
@@ -887,7 +924,7 @@ void AdjustCurrentGain_Wiper(void) {
       }
     }
 
-    /* ---- ZONA OK con histéresis: i_max entre I_MIN_H e I_MAX_H ---- */
+    /* ---- ZONA OK con histéresis: i_max entre I_MIN e I_MAX ---- */
     else if (ipeak >= I_MIN) {
       count_noSignal[phase]   = 0;
       count_señalBaja[phase]  = 0;
