@@ -84,7 +84,8 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "1.4.0"
+#define FIRMWARE_VERSION "1.4.1"
+
 #define PER_ADC_CHANNEL_COUNT 4U
 #define TOTAL_CHANNELS        6U
 #define TOTAL_PHASES          3U
@@ -93,38 +94,15 @@ typedef struct {
 #define MAX_RMS_PROM          3   // Cantidad de valores RMS promediados 10 = 50 segundos
 #define HYST                  40  // Histéresis para cruce (cuentas ADC)
 
-/* --- Umbrales de corriente con histéresis [CAMBIO 6] ---
- *
- * Zona ALTA (saturación):
- *   Entrada:  i_max > I_MAX       → bajar ganancia de inmediato
- *   Salida:   i_max < I_MAX_H     → volver a zona OK
- *   I_MAX_H = I_MAX * 0.85 ≈ 1566 cuentas (85% del fondo de escala)
- *
- * Zona BAJA (señal débil / ausente):
- *   Entrada:  i_max < I_MIN       → incrementar contador
- *   Salida:   i_max > I_MIN_H     → volver a zona OK, reset contador
- *   I_MIN_H = I_MIN * 1.20 ≈ 245 cuentas (20% por encima de I_MIN)
- *
- * Zona RUIDO (señal demasiado baja para ser real):
- *   i_max < I_MIN_NOISE            → tratar como ausencia total de señal
- *   I_MIN_NOISE = I_MIN * 0.25 ≈ 51 cuentas
- *
- * La banda de histéresis (I_MIN..I_MIN_H) y (I_MAX_H..I_MAX) evita
- * que el wiper cambie en cada período cuando la señal oscila cerca
- * de los umbrales duros (chattering).
- */
 #define I_MAX            1945   /* 95% de fondo de escala = 0.95 * 4095/2    */
-//#define I_MAX_H          1905   /* 93% umbral de salida zona alta  = 0.93 * 4095/2 */
-//#define I_MIN_H          164    /* 8% umbral de salida zona baja  = 0.08 * 4095/2 */
 #define I_MIN            204    /* 10% de fondo de escala = 0.10 * 4095/2    */
 #define I_MIN_NOISE      61     /* < 3% de fondo de escala: ruido puro       */ 
 
-/* --- Períodos para subida gradual de ganancia [CAMBIO 6] ---
+/* --- Períodos para subida gradual de ganancia ---
  *
  * PER_SUBIDA_GAIN: número de períodos consecutivos con señal baja pero
  *   presente (I_MIN_NOISE < i_max < I_MIN) antes de subir un nivel de
  *   ganancia. Evita subir por transitorios cortos.
- *   Valor 3 → ~60 ms a 50 Hz (conservador, ajustar según aplicación).
  *
  * PER_NO_SIGNAL: períodos con señal < I_MIN_NOISE para resetear a G=1×.
  *   Se mantiene en 1 para reacción rápida ante pérdida total de señal.
@@ -135,22 +113,13 @@ typedef struct {
 #define PER_NO_SIGNAL       1U  // cantidad de periodos sin señal para resetear wiper a ganancia mínima
 
 #define CONV_RAD_TO_DEG     57.2957795131f // 180 / pi
-#define FHI_ANGLE_OFFSET    0.0f // ángulo de fase adicional para corregir desfase del sensor de corriente (en grados, ajustado según medición)
 
-/*
-#define V1_GAIN               (222.0f / (0.6505f * 4095.f))
-#define V2_GAIN               (222.0f / (0.6505f * 4095.f))
-#define V3_GAIN               (222.0f / (0.6580f * 4095.f))
-#define I1_GAIN               (10.51f / (0.164f * 4095.f))
-#define I2_GAIN               (10.46f / (0.164f * 4095.f))
-#define I3_GAIN               (10.51f / (0.168f * 4095.f))
-*/
 const float V1_GAIN = 0.08205239034f;
 const float V2_GAIN = 0.08265239034f;
 const float V3_GAIN = 0.08255239034f;
 const float I1_GAIN = 0.01457762941325099933f;
-const float I2_GAIN = 0.01482773367120644378f;
-const float I3_GAIN = 0.01485965187518037064f;
+const float I2_GAIN = 0.01490253612335897156f;
+const float I3_GAIN = 0.01518113489719877252f;
 
 /* USER CODE END PD */
 
@@ -431,16 +400,9 @@ int main(void)
               rms_real[ph + TOTAL_PHASES] = rms_buffer[ph + TOTAL_PHASES][idx];
 
               /* ----------------------------------------------------------------
-               * [CAMBIO] POTENCIA ACTIVA P
+               * POTENCIA ACTIVA P
                * Método: producto directo muestra×muestra (IEEE 1459-2010)
                *   P = (1/N) * sum(v[n] * i[n])
-               *
-               * Ventajas vs DFT bin único:
-               *   - Captura P de todos los armónicos, no solo el fundamental
-               *   - El signo es correcto por definición:
-               *       v[n] e i[n] se miden con la misma referencia de offset
-               *       Si la corriente sale del nodo (generación), el producto
-               *       es negativo de forma natural, sin necesidad de negar.
                *
                * La función devuelve ADC² → se convierte con adc2_to_power()
                * que aplica: P_real = P_adc2 * vdda² * Kv * Ki / G
@@ -453,8 +415,8 @@ int main(void)
               P_buffer[ph][idx] = adc2_to_power(P_adc2, gain_table[ph], ph);
 
               /* ----------------------------------------------------------------
-               * [CAMBIO] POTENCIA REACTIVA Q
-               * Método: DFT bin k=1 (solo fundamental).
+               * POTENCIA REACTIVA Q
+               * Método: DFT bin k=1 (solo armonico fundamental).
                *
                * Convención de signo (con e^{-jwt}, factor 2/N):
                *   Q > 0 → corriente retrasada (carga inductiva)
@@ -510,13 +472,13 @@ int main(void)
               S[ph] = rms_total[ph] * rms_total[ph + TOTAL_PHASES];
 
               /* ----------------------------------------------------------------
-               * [CAMBIO] FACTOR DE POTENCIA FP
+               * FACTOR DE POTENCIA FP
                *
                * FP = P / S    (IEEE 1459-2010, rango [-1, +1])
                *   FP > 0 : flujo neto de energía hacia la carga (consumo)
                *   FP < 0 : flujo neto de energía hacia la red (generación)
                *
-               * FP_angulo = atan2(Q, P)  (rango [-180°, +180°])
+               * phi = atan2(Q, P)  (rango [-180°, +180°])
                *   Cuadrante I   (P>0, Q>0): consumo inductivo       [0°,  90°]
                *   Cuadrante II  (P<0, Q>0): generación inductiva    [90°, 180°]
                *   Cuadrante III (P<0, Q<0): generación capacitiva  [-180°,-90°]
@@ -527,10 +489,6 @@ int main(void)
                 FP[ph] = 0.0f;
                 phi[ph] = 0.0f;
               } else {
-                //FP_angulo[ph] = atan2f(Q_total[ph], P_total[ph]) * CONV_RAD_TO_DEG - FHI_ANGLE_OFFSET;
-                
-                //FP_calculado[ph] = cosf(FP_angulo[ph] * (M_PI / 180.0f)); // FP calculado a partir del ángulo de fase
-                
                 phi[ph] = acosf(P_total[ph] / S[ph]);
 
                 FP[ph] = cosf(phi[ph]);
@@ -557,11 +515,6 @@ int main(void)
                 }
 
                 phi[ph] *= CONV_RAD_TO_DEG;
-
-
-                //FP[ph] = P_total[ph] / S[ph];
-                
-                //FP_angulo[ph] *= CONV_RAD_TO_DEG; // convertir a grados
               }
 
                 
@@ -771,25 +724,24 @@ static float adc_to_voltage(float adc_value, uint8_t phase)
     case 2: return adc_value * vdda * V3_GAIN;
     default: return 0.0f;
   }
-  // calculo antiguo, funciona bien
-  //return ((float)adc_value * vdda * 0.08153905715f);//adc_value*(197.7/0.5842)*(vdda/4095)
 }
 
 static float adc_to_current(float adc_value, float gain, uint8_t phase)
 {
+  // ECUACION: I = adc_value * (vdda/4095) * (Ii/Io) / gain_variable
+
   switch (phase) {
     case 0: return (adc_value * vdda / gain) * I1_GAIN;
     case 1: return (adc_value * vdda / gain) * I2_GAIN;
     case 2: return (adc_value * vdda / gain) * I3_GAIN;
     default: return 0.0f;
   }
-    //return (float) ((adc_value * vdda * 2000.f) / (gain * 33.f * 4095.f));
 }
 
 /* -----------------------------------------------------------------------
- * [NUEVA] adc2_to_power — convierte ADC² a Watts o VAr
+ * adc2_to_power — convierte ADC² a Watts o VAr
  *
- * La DFT y calculate_active_power() trabajan sobre muestras crudas ADC,
+ * La calculate_single_bin_dft() y calculate_active_power() trabajan sobre muestras crudas ADC,
  * por lo que el resultado está en unidades ADC_V × ADC_I.
  *
  * La conversión correcta es:
@@ -815,11 +767,12 @@ static float adc2_to_power(float adc2_value, float gain, uint8_t phase) {
   return adc2_value * factor_v * factor_i;
 }
 
+// calcula la ganancia real a partir de la posición del wiper
 float calculate_gain(uint8_t wiper_position, uint8_t invertido){
   if(invertido){
-    return (float) (128.f - wiper_position)/wiper_position;
+    return (float) (128.0f - wiper_position)/wiper_position;
   }else{
-    return (float) wiper_position/(128.f - wiper_position);
+    return (float) wiper_position/(128.0f - wiper_position);
   }
 }
 
@@ -873,7 +826,7 @@ static void calculate_single_bin_dft(int16_t *buffer, uint8_t samples, float *re
  *    → count_cambio_wiper = salto_niveles + 1  (tiempo de establecimiento)
  *    → reset contadores de señal baja
  *
- *  ZONA OK  (I_MIN_H ≤ i_max ≤ I_MAX_H):
+ *  ZONA OK  (I_MIN ≤ i_max ≤ I_MAX):
  *    → sin cambio de wiper
  *    → reset de todos los contadores
  *
@@ -884,12 +837,12 @@ static void calculate_single_bin_dft(int16_t *buffer, uint8_t samples, float *re
  *
  *  ZONA RUIDO / sin señal  (i_max ≤ I_MIN_NOISE):
  *    → count_noSignal++
- *    → si count_noSignal ≥ PER_NO_SIGNAL → wiper = 0 (reset a G=1×)
+ *    → si count_noSignal ≥ PER_NO_SIGNAL → wiper = 0 (reset a G=7.5×)
  *    → reset count_señalBaja
  *
  *  HISTÉRESIS:
- *    Zona alta:  entra con I_MAX, sale con I_MAX_H  (banda inferior)
- *    Zona baja:  entra con I_MIN, sale con I_MIN_H  (banda superior)
+ *    Zona alta:  entra con I_MAX
+ *    Zona baja:  entra con I_MIN
  *    Zona ruido: entra con I_MIN_NOISE (sin histéresis, reset inmediato)
  *
  *  count_cambio_wiper:
