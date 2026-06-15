@@ -114,12 +114,15 @@ typedef struct {
 
 #define CONV_RAD_TO_DEG     57.2957795131f // 180 / pi
 
-const float V1_GAIN = 0.08205239034f;
-const float V2_GAIN = 0.08265239034f;
-const float V3_GAIN = 0.08255239034f;
-const float I1_GAIN = 0.01457762941325099933f;
-const float I2_GAIN = 0.01490253612335897156f;
-const float I3_GAIN = 0.01518113489719877252f;
+// Tensión
+const float V1_GAIN = 0.08298163366060f;
+const float V2_GAIN = 0.08370538179293f;
+const float V3_GAIN = 0.08293229644034f;
+
+// Corriente
+const float I1_GAIN = 0.01558602235028322576f;
+const float I2_GAIN = 0.01591030522616499604f;
+const float I3_GAIN = 0.01613464679895692741f;
 
 /* USER CODE END PD */
 
@@ -480,8 +483,8 @@ int main(void)
                *
                * phi = atan2(Q, P)  (rango [-180°, +180°])
                *   Cuadrante I   (P>0, Q>0): consumo inductivo       [0°,  90°]
-               *   Cuadrante II  (P<0, Q>0): generación inductiva    [90°, 180°]
-               *   Cuadrante III (P<0, Q<0): generación capacitiva  [-180°,-90°]
+               *   Cuadrante II  (P<0, Q>0): generación capacitiva    [90°, 180°]
+               *   Cuadrante III (P<0, Q<0): generación inductiva  [-180°,-90°]
                *   Cuadrante IV  (P>0, Q<0): consumo capacitivo     [-90°,  0°]
                * ---------------------------------------------------------------- */
               if (S[ph] < 0.001f) {
@@ -491,7 +494,8 @@ int main(void)
               } else {
                 phi[ph] = acosf(P_total[ph] / S[ph]);
 
-                FP[ph] = cosf(phi[ph]);
+                //FP[ph] = cosf(phi[ph]);
+                FP[ph] = P_total[ph] / S[ph];
                 
                 // Fabri:
                 // Banda muerta para Q cercano a cero (+/- 5VAr)
@@ -508,10 +512,6 @@ int main(void)
                 if (P_total[ph] <= 5.0f && P_total[ph] >= -5.0f) {
                   // No se tiene suficiente certeza sobre el signo de P cuando está cerca de cero, tratar como sin señal
                   FP[ph] = 0.0f;
-                }
-                else if(P_total[ph] < -5.0f){
-                  // Corrige el signo del factor de potencia para generación (P<0)
-                  FP[ph] = -FP[ph]; 
                 }
 
                 phi[ph] *= CONV_RAD_TO_DEG;
