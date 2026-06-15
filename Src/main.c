@@ -84,7 +84,7 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "1.4.1"
+#define FIRMWARE_VERSION "1.4.2"
 
 #define PER_ADC_CHANNEL_COUNT 4U
 #define TOTAL_CHANNELS        6U
@@ -118,7 +118,6 @@ typedef struct {
 const float V1_GAIN = 0.08298163366060f;
 const float V2_GAIN = 0.08370538179293f;
 const float V3_GAIN = 0.08293229644034f;
-
 // Corriente
 const float I1_GAIN = 0.01558602235028322576f;
 const float I2_GAIN = 0.01591030522616499604f;
